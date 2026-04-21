@@ -1,0 +1,13 @@
+{
+  "name": "dm-rag-server",
+  "version": "1.0.0",
+  "description": "my first RAG MCP Server",
+  "main": "bin/index.js",
+  "bin": {
+    "dm-rag-server": "bin/index.js"
+  },
+  "scripts": {
+    "start": "node bin/index.js"
+  },
+  "dependencies": {}
+}

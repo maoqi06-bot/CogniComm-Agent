@@ -1,0 +1,59 @@
+{
+  "mcpServers": {
+    "wireless-rag": {
+      "command": "node",
+      "args": [
+        "${PROJECT_ROOT}/bin/index.js"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+      },
+      "enabled": true
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp@latest"
+      ],
+      "enabled": false
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ],
+      "env": {
+        "UPSTASH_API_KEY": "${UPSTASH_API_KEY}"
+      },
+      "enabled": false
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem@latest"
+      ],
+      "enabled": false
+    },
+    "sqlite": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite@latest"
+      ],
+      "enabled": false
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github@latest"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "enabled": false
+    }
+  }
+}

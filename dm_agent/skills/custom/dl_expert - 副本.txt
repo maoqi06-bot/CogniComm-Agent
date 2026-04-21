@@ -1,0 +1,9 @@
+{
+  "type": "rag",
+  "skill_id": "dl_expert",
+  "display_name": "深度学习专家",
+  "index_subdir": "dl_idx",
+  "data_subdir": "DeepLearnling", 
+  "keywords": ["GNN", "LSTM"],
+  "priority": 10
+}

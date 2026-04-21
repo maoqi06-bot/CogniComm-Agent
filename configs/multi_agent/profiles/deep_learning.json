@@ -1,0 +1,73 @@
+{
+  "enabled": true,
+  "name": "deep_learning",
+  "domain": "deep_learning",
+  "aliases": ["deep learning", "深度学习", "神经网络", "机器学习"],
+  "auto_activate_keywords": ["deep learning", "neural network", "transformer", "深度学习", "神经网络"],
+  "profiles": {
+    "rag": {
+      "type": "rag",
+      "name": "deep_learning_rag_agent",
+      "domain_style": "deep_learning_research",
+      "top_k": 6,
+      "synthesis_temperature": 0.15,
+      "skills": ["deep_learning", "deep_learning_rag"],
+      "mcp_tools": ["deep_learning_search", "paper_search", "vector_search"],
+      "memory_policy": {
+        "read_long_term": true,
+        "write_long_term": false,
+        "write_shared_short_term": true,
+        "write_private_short_term": true,
+        "allowed_long_term_kinds": []
+      },
+      "memory_write_templates": {
+        "research_note": {
+          "category": "skill_knowledge",
+          "priority": "normal",
+          "importance_score": 0.62,
+          "tags": ["multi_agent", "deep_learning", "rag_agent", "research"],
+          "source": "multi_agent_profile:deep_learning",
+          "title": "Deep learning research note"
+        }
+      }
+    },
+    "code": {
+      "type": "code",
+      "name": "deep_learning_code_agent",
+      "code_style": "ml_engineering",
+      "use_docker": true,
+      "allow_rag_tools": false,
+      "skills": ["python_expert"],
+      "memory_policy": {
+        "read_long_term": true,
+        "write_long_term": true,
+        "write_shared_short_term": true,
+        "write_private_short_term": true,
+        "allowed_long_term_kinds": [
+          "engineering_experience",
+          "debugging_lesson",
+          "implementation_pattern",
+          "simulation_result"
+        ]
+      },
+      "memory_write_templates": {
+        "engineering_experience": {
+          "category": "skill_knowledge",
+          "priority": "normal",
+          "importance_score": 0.64,
+          "tags": ["multi_agent", "deep_learning", "ml_engineering", "code_agent"],
+          "source": "multi_agent_profile:deep_learning",
+          "title": "Deep learning engineering experience"
+        },
+        "simulation_result": {
+          "category": "skill_knowledge",
+          "priority": "normal",
+          "importance_score": 0.6,
+          "tags": ["multi_agent", "deep_learning", "experiment", "simulation_result"],
+          "source": "multi_agent_profile:deep_learning",
+          "title": "Deep learning experiment result"
+        }
+      }
+    }
+  }
+}
