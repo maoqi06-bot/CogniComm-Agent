@@ -1,25 +1,24 @@
 {
   "skill_name": "dl_expert",
-  "display_name": "深度学习专家",
+  "display_name": "Deep Learning Expert",
   "version": "1.0.0",
-  "description": "提供神经网络架构、PyTorch 实现及模型优化建议",
-  "keywords": ["PyTorch", "GNN", "Transformer", "梯度爆炸", "收敛"],
-  "patterns": ["神经网络", "训练模型", "深度学习"],
-
-  "rag_server_name": "rag_service",
-
+  "description": "Provides retrieval support for neural network architectures, PyTorch implementation, and training optimization.",
+  "keywords": ["PyTorch", "GNN", "Transformer", "gradient explosion", "convergence"],
+  "patterns": ["neural network", "training model", "deep learning"],
+  "rag_server_name": "wireless-rag",
   "domain_config": {
     "skill_id": "deep_learning",
+    "display_name": "Deep Learning Knowledge Base",
     "index_subdir": "dl_idx",
-    "data_subdir": "DL_Papers",
+    "data_subdir": "DeepLearnling",
     "top_k": 4,
-    "threshold": 0.3
+    "threshold": 0.3,
+    "use_hybrid": true,
+    "use_reranker": true
   },
-
-  "prompt_addition": "你现在具备深度学习专家能力。请优先检索知识库以提供准确的超参数建议。代码实现必须基于 PyTorch。",
-
+  "prompt_addition": "You now have deep learning expert augmentation. Prefer the deep learning knowledge base for papers, implementation background, and training experience. If the task also requires code generation, continue with the default code tools after grounding on retrieved results.",
   "tool_definition": {
-    "name": "search_dl_knowledge",
-    "description": "在深度学习专业文献库中搜索知识。参数：{\"query\": \"搜索词\"}。"
+    "name": "dl_expert_search",
+    "description": "Search the deep learning knowledge base. Example arguments: {\"query\": \"transformer training stability\"}"
   }
 }

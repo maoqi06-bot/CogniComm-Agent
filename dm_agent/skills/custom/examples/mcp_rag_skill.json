@@ -1,0 +1,24 @@
+{
+  "skill_name": "medical_expert",
+  "display_name": "Medical Expert",
+  "version": "1.0.0",
+  "description": "Example MCP-driven domain skill that uses the shared RAG MCP server to access a medical knowledge base.",
+  "keywords": ["medical", "diagnosis", "clinical", "paper"],
+  "patterns": ["medical", "diagnosis", "clinical", "case history"],
+  "rag_server_name": "wireless-rag",
+  "domain_config": {
+    "skill_id": "medical",
+    "display_name": "Medical Knowledge Base",
+    "index_subdir": "medical_idx",
+    "data_subdir": "medical",
+    "top_k": 4,
+    "threshold": 0.35,
+    "use_hybrid": true,
+    "use_reranker": true
+  },
+  "prompt_addition": "You now have medical-domain retrieval augmentation. Use the medical knowledge base first for terminology, workflow, and literature questions, then continue with other tools only after grounding on the retrieved result.",
+  "tool_definition": {
+    "name": "medical_expert_search",
+    "description": "Search professional medical materials. Example arguments: {\"query\": \"clinical pathway for sepsis\"}"
+  }
+}
