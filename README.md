@@ -525,6 +525,10 @@ RAGAS 评估现在采用 **Dashboard 手动触发** 模式：
 - 记忆模板和审批策略
 - Dashboard 可视化能力
 
+如果你想专门了解 RAG 的模块设计、数据目录约定和使用方式，请继续阅读：
+
+- [`docs/RAG_SYSTEM_GUIDE.md`](./docs/RAG_SYSTEM_GUIDE.md)
+
 ## 13. 致谢与引用
 
 CogniComm-Agent 基于本项目团队的持续工程演进构建，同时也受到了以下开源项目的重要启发：
