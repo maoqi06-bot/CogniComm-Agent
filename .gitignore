@@ -274,6 +274,11 @@ data/ragas_eval.log
 data/ragas_eval_status.json
 data/ragas_report.json
 dm_agent/data/memory/
+dm_agent/data/indices/
+dm_agent/data/knowledge_base/
+dm_agent/data/builtin_knowledge/
+dm_agent/skills/data/builtin_knowledge/
+utils/my_raw_papers/
 test_logs/
 .tmp_pycache_check/
 

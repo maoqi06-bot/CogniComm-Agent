@@ -1,592 +1,535 @@
-# Your First AI Agent Project
+# CogniComm-Agent
 
-<div align="center">
+CogniComm-Agent is an LLM agent system for research workflows, code execution, domain RAG, memory, and engineering automation. It keeps the lightweight experience of a single-agent coding assistant while extending the system into a practical multi-agent platform with orchestration, domain profiles, long-term memory, MCP integration, dashboard-based evaluation, and human approval loops.
 
-**Intelligent Code Agent Based on Multiple LLM APIs**
+The two primary entry points are:
 
-[![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+- [`main.py`](./main.py): CLI entry for single-agent and multi-agent execution
+- [`dashboard.py`](./dashboard.py): developer dashboard for RAG evaluation, memory approval, replay, and observability
 
-[中文](README.md) | **English**
+> The current project name is **CogniComm-Agent**. If you still see `DM-Agent` or `DM-Code-Agent` in older files, treat this README and the current codebase as the source of truth.
 
-</div>
+## 1. What This Project Is For
 
-## 📖 Project Overview
+CogniComm-Agent is built for tasks that require more than plain chat:
 
-If you're just starting to learn about AI Agents and don't know where to begin, start with this project to learn or develop your own Agent applications.
+- LLM-based task understanding and decomposition
+- domain knowledge retrieval through RAG
+- actual code, scripts, experiments, and report generation
+- persistent memory and user preference handling
+- white-box observability for RAG quality and multi-agent execution
 
-This project provides all new AI Agent developers with an extremely low learning curve yet powerful **Code Agent**, based on the ReAct (Reasoning + Acting) architecture, supporting multiple large language models (DeepSeek, OpenAI, Claude, Gemini) for reasoning, and focused on software development and code-related tasks. The agent can:
+This is not just a chatbot, and not just a wrapper around code tools. It is an agent framework oriented toward real research and engineering workflows.
 
-### 🎯 Core Capabilities ⭐ v1.2.0 New
-- 📋 **Task Planning** - Generate structured plans before execution, reduce ineffective operations by 30-50% (v1.1.0)
-- 🧠 **Code Analysis** - Parse AST, extract function signatures, analyze dependencies (v1.1.0)
-- 🗜️ **Context Compression** - Auto-compress conversation history, support long conversations without token overflow (v1.1.0)
-- 🔌 **MCP Protocol Support** - Integrate any MCP tools, unlimited extensibility (v1.2.0)
-- 🎯 **Skill Expert System** - Auto-activate domain expert capabilities based on task, inject specialized prompts and tools (v1.4.0) ⭐ New
+## 2. Core Capabilities
 
-### 🛠️ Tool Capabilities
-- 📝 **Code Editing** - Precisely edit specific file lines with insert/replace/delete
-- 🔍 **Code Search** - Regex search with context display
-- 🧪 **Test Execution** - Run pytest/unittest test suites
-- ✨ **Code Linting** - Run pylint/flake8/mypy/black linting tools
-- 📁 **File Operations** - Create, read (with line ranges), list files and directories (with recursive filtering)
-- 🐍 **Python Execution** - Run Python code and scripts
-- 💻 **Shell Commands** - Execute system commands
-- 🎯 **Task Completion** - Intelligently mark task completion status
-- 🎨 **Interactive Interface** - User-friendly menu-based operation experience
+### 2.1 Single-Agent Mode
 
-## ✨ Key Features
+Single-agent mode is optimized for faster, lighter workflows:
 
-### 🎯 v1.1.0 New Core Features
-#### 📋 Task Planner
-- **Smart Plan Generation** - Auto-generate 3-8 step structured plans before task execution
-- **Real-time Progress Tracking** - Mark completed steps with clear execution progress display
-- **30-50% Efficiency Boost** - Reduce ineffective tool calls and improve task success rate
-- **Auto Fallback** - Automatically switch to regular mode if plan generation fails
+- ReAct reasoning loop
+- multiple model backends: DeepSeek / OpenAI-compatible / Claude / Gemini
+- built-in code tools
+- MCP tool mounting
+- skill expert system
+- context compression
+- single-agent long-term memory
 
-#### 🧠 Code Analysis Tools
-- **parse_ast** - Parse Python file AST, extract functions, classes, imports structure
-- **get_function_signature** - Get complete function signature with type annotations
-- **find_dependencies** - Analyze file dependencies (stdlib, third-party, local modules)
-- **get_code_metrics** - Count code lines, functions, classes metrics
+### 2.2 Multi-Agent Mode
 
-#### 🗜️ Context Compressor
-- **Auto Compression** - Auto-compress history every 5 turns, keep recent 3 turns intact
-- **Smart Summary** - Extract key info (file paths, tool calls, errors, completed tasks)
-- **Save Tokens** - Reduce 20-30% token consumption, support longer conversations
-- **Seamless Integration** - Fully automatic, no manual intervention needed
+Multi-agent mode is the main engineering direction of the project. It supports:
 
-#### 🔌 MCP Protocol Integration (Model Context Protocol) ⭐ v1.2.0 New
-- **Zero-Code Extension** - Integrate any MCP tools via config file, no code changes needed
-- **Pre-installed Playwright** - Built-in browser automation (navigate, screenshot, click, fill forms)
-- **Pre-installed Context7** - Intelligent context management and semantic search
-- **Unified Tool Interface** - MCP tools auto-wrapped as standard Tool objects
-- **Lifecycle Management** - Auto-start and stop MCP server processes
-- **Common MCP Support** - Playwright, Context7, Filesystem, SQLite, etc.
-- **Detailed Documentation** - See [MCP_GUIDE.md](MCP_GUIDE.md) for complete integration guide
+- `OrchestratorAgent` for decomposition, scheduling, and final aggregation
+- `RAGAgent` for full retrieve + synthesize knowledge workflows
+- `CodeAgent` for code, files, tests, experiments, and documentation
+- dependency-aware batch scheduling
+- optional Docker-based isolated execution
+- shared short-term memory plus controlled long-term writes
+- dashboard pages for memory replay, approvals, and RAG evaluation
 
-#### 🎯 Skill Expert System ⭐ v1.4.0 New
-- **Auto-Activation** - Automatically select and activate relevant domain expert skills based on task description
-- **3 Built-in Experts** - Python Expert, Database Expert, Frontend Dev Expert, ready out of the box
-- **Specialized Tool Injection** - Each skill can carry specialized tools (e.g., `python_best_practices`, `sql_review`)
-- **Prompt Enhancement** - Activated skills auto-inject domain best practices into the system prompt
-- **Custom Skills** - Support JSON config files for quick custom skill creation, no code needed
-- **Python Class Extension** - For complex scenarios, define skills as Python classes with custom tools
-- **Detailed Documentation** - See [SKILL_GUIDE.md](SKILL_GUIDE.md) for complete guide
+### 2.3 RAG and Domain Knowledge
 
-### 🤖 Multi-Model Support
-- **DeepSeek** - Default model, cost-effective
-- **OpenAI** - GPT-3.5/GPT-4 series models
-- **Claude** - Anthropic Claude 3.5 series
-- **Gemini** - Google Gemini series
-- Support for custom Base URL and model parameters
+- hybrid RAG with vector retrieval + BM25 + reranking
+- domain-specific knowledge bases via skills or MCP
+- domain profiles and specialized prompts
+- dashboard-triggered RAGAS evaluation that does not block the CLI task path
 
-### 🚀 Interactive CLI Interface
-- **Friendly Menu System** - No need to memorize complex commands
-- **Real-time Configuration** - Dynamically adjust runtime parameters
-- **Colorful Output** - Clear and beautiful interface (supports colorama)
-- **Tool List Viewer** - View all available tools with one click
+### 2.4 Engineering Hardening
 
-### 🛠️ Powerful Code Agent Toolset
+The implementation is backed by the engineering stages documented in:
 
-**MCP Tools** ⭐ v1.2.0 New
-- `mcp_playwright_*` - Browser automation tools (navigate, screenshot, click, forms)
-- `mcp_context7_*` - Intelligent context management tools (store, retrieve, search)
-- Support dynamic loading of any MCP tools
+- [`ENGINEERING_P0.md`](./ENGINEERING_P0.md)
+- [`ENGINEERING_P1.md`](./ENGINEERING_P1.md)
+- [`ENGINEERING_P2.md`](./ENGINEERING_P2.md)
 
-**Code Analysis Tools** (v1.1.0)
-- `parse_ast` - Parse Python file AST structure
-- `get_function_signature` - Extract function signature and types
-- `find_dependencies` - Analyze file dependencies
-- `get_code_metrics` - Get code metrics
+In practice, that means:
 
-**Code Editing Tools**
-- `edit_file` - Precisely edit specific file lines (insert/replace/delete)
-- `search_in_file` - Regex search with context display
+- P0: retries, logging, LLM wrappers
+- P1: rate limiting, secure execution, health checks, resource management
+- P2: multi-agent orchestration, profiles, memory, RAG evaluation, dashboard integration
 
-**Testing and Linting Tools**
-- `run_tests` - Run pytest/unittest test suites
-- `run_linter` - Run pylint/flake8/mypy/black code linters
+## 3. Architecture Overview
 
-**File Operation Tools**
-- `list_directory` - List directory contents (with recursive and type filtering)
-- `read_file` - Read text files (with line number ranges)
-- `create_file` - Create or overwrite files
+### 3.1 Runtime Layers
 
-**Code Execution Tools**
-- `run_python` - Execute Python code
-- `run_shell` - Execute Shell commands
-- `task_complete` - Mark task as complete
+1. **Entry layer**
+   - [`main.py`](./main.py)
+   - [`dashboard.py`](./dashboard.py)
 
-### 🎯 Flexible Usage
-- **Interactive Mode** - Menu-based operation, suitable for continuous tasks
-- **Multi-turn Conversation Mode** - Continuous dialogue with complete history ⭐ New
-- **Command-line Mode** - Quick execution of single tasks
-- **Batch Mode** - Support for script automation
-- **Persistent Configuration** - Custom settings saved permanently ⭐ New
+2. **Agent layer**
+   - single-agent `ReactAgent`
+   - multi-agent `OrchestratorAgent`, `RAGAgent`, `CodeAgent`
 
-## 📋 Prerequisites
+3. **Tool and skill layer**
+   - default tools in `dm_agent/tools`
+   - MCP integration in `dm_agent/mcp`
+   - skill system in `dm_agent/skills`
 
-- **Python 3.7+** (Recommended 3.9 or higher)
-- **LLM API Key** - Choose based on model:
-  - [DeepSeek API Key](https://platform.deepseek.com/) (default)
-  - [OpenAI API Key](https://platform.openai.com/)
-  - [Claude API Key](https://console.anthropic.com/)
-  - [Gemini API Key](https://makersuite.google.com/app/apikey)
+4. **Knowledge and memory layer**
+   - RAG in `dm_agent/rag`
+   - single-agent memory in `dm_agent/memory`
+   - multi-agent memory in `dm_agent/multi_agent/memory.py`
 
-## 🔧 Installation
+5. **Engineering support layer**
+   - logging and retry utilities
+   - security and resource management
+   - Docker execution support
 
-### 1. Clone the Repository
+### 3.2 Multi-Agent Workflow
 
-```bash
-git clone <repository-url>
-cd dm-agent
+In P2 mode, the high-level flow is:
+
+1. the user selects multi-agent mode in the CLI
+2. `main.py` runs LLM, embedding, and Docker preflight checks
+3. `OrchestratorAgent` uses `TaskDecomposer` to generate a subtask graph
+4. `TaskScheduler` executes subtasks in dependency-respecting batches
+5. knowledge subtasks are handled by `RAGAgent`
+6. implementation subtasks are handled by `CodeAgent`
+7. `ResultAggregator` produces the final answer and report
+8. traces, memory events, approval records, and RAG evaluation data become visible in the dashboard
+
+## 4. Repository Structure
+
+```text
+CogniComm-Agent/
+├─ main.py                          # CLI entry point
+├─ dashboard.py                     # Streamlit dashboard
+├─ README.md
+├─ README_EN.md
+├─ ENGINEERING_P0.md
+├─ ENGINEERING_P1.md
+├─ ENGINEERING_P2.md
+├─ requirements.txt
+├─ package.json                     # Node package for local MCP server
+├─ mcp_config.json.example
+├─ config.json.example
+├─ .env.example
+├─ configs/
+│  └─ multi_agent/
+│     └─ profiles/
+├─ dm_agent/
+│  ├─ clients/
+│  ├─ core/
+│  ├─ tools/
+│  ├─ mcp/
+│  ├─ prompts/
+│  ├─ skills/
+│  ├─ rag/
+│  ├─ memory/
+│  ├─ multi_agent/
+│  └─ utils/
+├─ docs/
+│  └─ technical_notes/
+├─ task/
+└─ data/
 ```
 
-### 2. Install Dependencies
+## 5. Module Guide
+
+### 5.1 `main.py`
+
+`main.py` is the operational entry point. It handles:
+
+- CLI parsing
+- loading `.env` and persisted config
+- MCP startup
+- skill loading
+- single-agent execution
+- multi-agent execution
+- runtime preflight:
+  - LLM authentication
+  - embedding configuration display
+  - Docker visibility checks
+
+The interactive menu currently includes:
+
+1. Execute a new task
+2. Multi-turn conversation mode
+3. View available tools
+4. Configuration settings
+5. View available skills
+6. P2: Multi-agent collaboration mode
+7. Exit
+
+### 5.2 `dashboard.py`
+
+The dashboard is a developer control plane. It is not the main task entry point. It provides:
+
+- RAG runtime status
+- knowledge base browsing
+- retrieval-chain diagnostics
+- RAGAS charts and reports
+- multi-agent memory views:
+  - long-term hit rate
+  - preference hit rate
+  - approval queue
+  - event timeline
+  - task-level call graph
+  - replay export
+
+### 5.3 `dm_agent/clients`
+
+Model client implementations live here:
+
+- `DeepSeekClient`
+- `OpenAIClient`
+- `ClaudeClient`
+- `GeminiClient`
+
+They are created through `create_llm_client(...)` and aligned through `PROVIDER_DEFAULTS`.
+
+### 5.4 `dm_agent/core`
+
+This is where `ReactAgent` lives. It is responsible for:
+
+- prompt assembly
+- ReAct loop execution
+- tool calling
+- step tracking
+- context compression hooks
+
+Single-agent mode and the multi-agent `CodeAgent` both rely on this core.
+
+### 5.5 `dm_agent/tools`
+
+The default toolset covers common engineering actions such as:
+
+- file reads and writes
+- AST parsing
+- function signature extraction
+- directory inspection
+- shell / Python / test execution
+
+### 5.6 `dm_agent/mcp`
+
+This layer loads and manages MCP server configuration. See [`mcp_config.json.example`](./mcp_config.json.example).
+
+Example MCP servers in the sample config:
+
+- `wireless-rag`
+- `playwright`
+- `context7`
+- `filesystem`
+- `sqlite`
+- `github`
+
+The `wireless-rag` sample uses `${PROJECT_ROOT}/bin/index.js` so the repository does not depend on machine-specific absolute paths.
+
+### 5.7 `dm_agent/skills`
+
+Skills inject specialized prompts, heuristics, and tools into the system. The repository includes:
+
+- code-oriented skills
+- database skill
+- frontend skill
+- skill creation skill
+- RAG/domain-oriented skills
+- wireless communication related skills
+
+In single-agent mode, skills directly shape tools and prompts. In multi-agent mode, they mainly support domain RAG and specialized execution behavior.
+
+### 5.8 `dm_agent/rag`
+
+This is the knowledge system backbone:
+
+- `document_loader.py`: document loading and chunking
+- `embeddings.py`: embedding wrappers and configuration resolution
+- `vector_store.py`: FAISS-backed vector storage
+- `retriever.py`: hybrid retrieval, rank fusion, reranking
+- `rag_mcp_server.py`: multi-domain RAG MCP server
+- `evaluator.py` and `observer.py`: RAGAS evaluation and observation
+
+In the current multi-agent design, **RAGAgent owns the full RAG chain**. It does not just return raw chunks.
+
+### 5.9 `dm_agent/memory`
+
+This directory contains the single-agent memory system:
+
+- `ContextCompressor`
+- `LongTermMemoryStore`
+- `MemoryManager`
+
+It remains available and unchanged as a selectable mode.
+
+### 5.10 `dm_agent/multi_agent`
+
+This directory contains the multi-agent implementation:
+
+- `runtime.py`
+  - `OrchestratorAgent`
+  - `RAGAgent`
+  - `CodeAgent`
+  - `DockerRunner`
+  - `TaskDecomposer`
+  - `TaskScheduler`
+  - `ResultAggregator`
+- `profiles.py`
+- `profile_loader.py`
+- `domain_profiles.py`
+- `toolkits.py`
+- `memory.py`
+
+Key responsibilities:
+
+- `OrchestratorAgent`: top-level planning, dependency wiring, result merging
+- `RAGAgent`: retrieve + synthesize domain knowledge
+- `CodeAgent`: code, files, tests, experiments, and technical artifacts
+- `DockerRunner`: optional isolated execution with graceful fallback when Docker is unavailable
+
+### 5.11 `dm_agent/utils`
+
+This layer carries the P0 and P1 engineering support:
+
+- structured logging
+- retry utilities
+- timeout wrappers
+- resource manager
+- semaphore-based rate limiting
+- secure shell execution
+- health checks
+
+## 6. Memory System
+
+### 6.1 Single-Agent Memory
+
+The single-agent memory path remains available and useful for:
+
+- multi-turn context retention
+- important fact storage
+- lightweight project preference recall
+
+### 6.2 Multi-Agent Memory
+
+The multi-agent memory hub in [`dm_agent/multi_agent/memory.py`](./dm_agent/multi_agent/memory.py) supports:
+
+- shared short-term event history
+- agent-specific memory policies
+- long-term write candidates
+- user preference capture and retrieval
+- human approval queue
+- replay and export in the dashboard
+
+By default:
+
+- `orchestrator` owns global summaries and user preference writes
+- `rag_agent` mostly reads long-term memory
+- `code_agent` writes implementation patterns, debugging lessons, engineering experience, and simulation results
+
+## 7. Profiles and Extensibility
+
+Profiles let you tailor agent behavior, tools, prompts, and memory policy without rewriting the runtime. The sample directory is:
+
+- [`configs/multi_agent/profiles`](./configs/multi_agent/profiles)
+
+There are two main extension paths:
+
+1. **Add a new skill**
+   - implement it under the skill system
+   - let `SkillManager` load or register it
+
+2. **Add a new multi-agent profile**
+   - add a profile JSON
+   - route it through the profile loader for domain-specific behavior
+
+This makes the system flexible for additional research domains.
+
+## 8. Configuration
+
+### 8.1 Environment Variables
+
+Start from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+Common settings include:
+
+```env
+DEEPSEEK_API_KEY=
+OPENAI_API_KEY=
+OPENAI_BASE_URL=https://sg.uiuiapi.com/v1/
+OPENAI_API_STYLE=auto
+
+EMBEDDING_PROVIDER=openai
+EMBEDDING_API_KEY=
+EMBEDDING_BASE_URL=https://sg.uiuiapi.com/v1/
+EMBEDDING_MODEL=text-embedding-ada-002
+EMBEDDING_DIMENSION=1536
+
+DOCKER_PATH=
+```
+
+Important notes:
+
+- do not commit `.env`
+- do not hardcode real API keys into `mcp_config.json`
+- use `mcp_config.json.example` as the shareable template
+
+### 8.2 Persisted CLI Config
+
+The CLI can persist runtime configuration into a local `config.json`. In practice, the effective precedence is typically:
+
+1. command-line arguments
+2. local `config.json`
+3. code defaults
+4. environment variables as supporting inputs
+
+## 9. Installation and Startup
+
+### 9.1 Install Python Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**Dependencies**:
-- `requests` - HTTP request library for calling LLM API
-- `python-dotenv` - Environment variable management
-- `colorama` - Colorful terminal output (optional but recommended)
-- `google-generativeai` - Google Gemini official SDK
-
-### 3. Configure API Key
-
-Copy the `.env.example` file and rename it to `.env`, then add your real API key:
+### 9.2 Install Node Dependencies
 
 ```bash
-# Copy the example file
-cp .env.example .env
-
-# Edit the .env file, configure the corresponding key based on the model you're using
-# DeepSeek (default)
-DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
-
-# OpenAI (optional)
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
-
-# Claude (optional)
-CLAUDE_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxxxxx
-
-# Gemini (optional)
-GEMINI_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxx
+npm install
 ```
 
-**⚠️ Security Notice**:
-- The `.env` file contains your private API key and is configured in `.gitignore` to prevent it from being committed to Git
-- Do not share the `.env` file with others or upload it to public repositories
-- Only the `.env.example` file will be committed to the repository as a configuration template
-
-Or set the environment variable in the command line:
-
-**Windows (PowerShell)**:
-```powershell
-$env:DEEPSEEK_API_KEY="your_api_key_here"
-```
-
-**Linux/macOS**:
-```bash
-export DEEPSEEK_API_KEY="your_api_key_here"
-```
-
-## 🚀 Quick Start
-
-### Interactive Mode (Recommended)
-
-Run the program directly to enter the friendly menu interface:
+### 9.3 Start the CLI
 
 ```bash
 python main.py
 ```
 
-You will see:
-
-```
-======================================================================
-              DM-Agent System
-======================================================================
-Welcome to the Multi-Model ReAct Agent System!
-
-Main Menu:
-  1. Execute New Task
-  2. Multi-turn Conversation Mode
-  3. View Available Tools
-  4. Configuration Settings
-  5. View Available Skills
-  6. Exit Program
-
-Please select an option (1-6):
-```
-
-### Command-line Mode (Quick Execution)
-
-Execute tasks directly from the command line:
+### 9.4 Start the Dashboard
 
 ```bash
-# Basic usage (using default DeepSeek)
-python main.py "Create a hello.py file that prints hello world"
-
-# Use OpenAI
-python main.py "Your task" --provider openai --model gpt-4
-
-# Use Claude
-python main.py "Your task" --provider claude --model claude-3-5-sonnet-20241022
-
-# Use Gemini
-python main.py "Your task" --provider gemini --model gemini-1.5-flash
-
-# Show detailed steps
-python main.py "Calculate 123 + 456" --show-steps
-
-# Custom configuration
-python main.py "Your task" --max-steps 50 --temperature 0.5
+streamlit run dashboard.py
 ```
 
-## 📚 Usage Examples
-
-#### Task Planner Example
-```bash
-python main.py "Create a complete calculator program with add, subtract, multiply, divide functions and tests"
-```
-
-You will see:
-```
-📋 Generated Execution Plan:
-Plan Progress: 0/5 steps completed
-
-○ Step 1: create_file - Create calculator main program file
-○ Step 2: edit_file - Add calculation functions
-○ Step 3: create_file - Create test file
-○ Step 4: run_tests - Run tests for verification
-○ Step 5: task_complete - Complete task
-```
-
-#### Code Analysis Tools Example
-```bash
-# Analyze file structure
-python main.py "Analyze the code structure of main.py and list all functions and classes"
-
-# Extract function signature
-python main.py "Get the complete signature of the calculate function in calculator.py"
-
-# Analyze dependencies
-python main.py "Analyze what third-party libraries main.py depends on"
-
-# Get code metrics
-python main.py "Count the number of code lines in all Python files in the src directory"
-```
-
-#### Context Compression Example
-In multi-turn conversation mode, auto-compress every 5 turns:
-```
-🗜️ Compressing conversation history to save tokens...
-   Compression ratio: 62.5%, saved 10 messages
-```
-
-### Example 0.5: MCP Tools Usage ⭐ v1.2.0
-
-#### Playwright MCP Example (Browser Automation)
-```bash
-# Open webpage and take screenshot
-python main.py "Open https://www.example.com and save screenshot as example.png"
-
-# Automate form filling
-python main.py "Open https://example.com/login, enter 'testuser' in username field, 'password123' in password field, then click login"
-
-# Extract webpage data
-python main.py "Visit https://news.ycombinator.com and extract the top 10 news headlines"
-```
-
-#### Context7 MCP Example (Context Management)
-```bash
-# Store context
-python main.py "Store the current project architecture information in Context7"
-
-# Semantic search
-python main.py "Search for database-related contexts in Context7"
-
-# Related context
-python main.py "Get historical contexts related to the current task"
-```
-
-#### Integrate New MCP Tools
-Only 3 steps, no code needed:
-1. Edit `mcp_config.json` to add configuration
-2. Restart the system
-3. Tools automatically available
-
-See: [MCP_GUIDE.md](MCP_GUIDE.md)
-
-### Example 0.6: Skill Expert System ⭐ v1.4.0
-
-The agent automatically activates relevant skills based on the task, no manual configuration needed:
+### 9.5 Quick CLI Examples
 
 ```bash
-# Python Expert auto-activated
-python main.py "Write a Python script to parse CSV files with type hints"
-# 🎯 Activated skills: Python Expert
-
-# Database Expert + Python Expert auto-activated
-python main.py "Optimize the SQL queries in my Django project"
-# 🎯 Activated skills: Python Expert, Database Expert
-
-# Frontend Dev Expert auto-activated
-python main.py "Create a React component to display a user list"
-# 🎯 Activated skills: Frontend Dev Expert
+python main.py --task "Analyze the current project structure"
+python main.py --task "Implement a minimal HBF example" --provider openai --model gpt-5
+python main.py --task "Retrieve ISAC papers and generate an experiment report" --multi-agent
 ```
 
-#### Create Custom Skills
+## 10. Usage Modes
 
-Simply create a JSON file in the `dm_agent/skills/custom/` directory:
+### 10.1 Single-Agent Mode
 
-```json
-{
-  "name": "devops_expert",
-  "display_name": "DevOps Expert",
-  "description": "Docker, K8s, CI/CD best practices guidance",
-  "keywords": ["docker", "kubernetes", "ci/cd", "deploy"],
-  "prompt_addition": "You now have DevOps expert capabilities..."
-}
-```
+Best for:
 
-See: [SKILL_GUIDE.md](SKILL_GUIDE.md)
+- code edits
+- file operations
+- quick technical tasks
+- multi-turn interactive development
 
-### Example 1: Code Editing
-```bash
-# Insert code at a specific line
-python main.py "Insert a print statement at line 10 in test.py"
+How to use it:
 
-# Replace code in a line range
-python main.py "Replace lines 5-8 in main.py with a new function implementation"
+1. run `python main.py`
+2. choose “Execute new task” or “Multi-turn conversation mode”
+3. enter your task
+4. inspect the result and logs
 
-# Search and modify code
-python main.py "Search for all code containing 'TODO' in the project and list them"
-```
+### 10.2 Multi-Agent Mode
 
-### Example 2: Testing and Code Linting ⭐ New Feature
-```bash
-# Run tests
-python main.py "Run all test cases in the tests directory"
+Best for:
 
-# Code linting
-python main.py "Check code quality in the src directory with flake8"
+- research-style complex tasks
+- retrieval + derivation + implementation + documentation
+- workflows with explicit knowledge dependencies and artifact outputs
 
-# Format checking
-python main.py "Check if main.py conforms to black code style"
-```
+How to use it:
 
-### Example 3: File Operations (Enhanced)
-```bash
-# Read specific line range
-python main.py "Read lines 10-20 of config.py"
+1. run `python main.py`
+2. choose `6. P2: Multi-Agent`
+3. enter a complete task description
+4. let the system perform:
+   - preflight
+   - decomposition
+   - RAG subtasks
+   - code subtasks
+   - aggregation and reporting
 
-# Recursively list Python files
-python main.py "List all .py files in the project"
+### 10.3 Dashboard-Based RAG Evaluation
 
-# Create file
-python main.py "Create a file named notes.txt with today's date"
-```
+RAGAS evaluation is triggered manually from the dashboard:
 
-### Example 4: Math Calculation
+- it does not block CLI task input
+- it runs in the background
+- it reports both generation and retrieval quality
 
-```bash
-python main.py "Calculate the result of (100 + 200) * 3" --show-steps
-```
+### 10.4 Memory Approval in the Dashboard
 
-### Example 5: Code Execution
+Some long-term memory writes require human approval. The dashboard lets you:
 
-```bash
-python main.py "Use Python to generate 10 random numbers and save them to random.txt"
-```
+- inspect pending records
+- approve or reject them
+- observe cross-task hit rates and approval statistics
 
-### Example 6: Complex Task
+## 11. Frequently Asked Questions
 
-```bash
-python main.py "Create a sort folder with 10 sorting algorithm implementations in both C++ and Python"
-```
+### 11.1 Why are RAG tools disabled for CodeAgent in multi-agent mode?
 
-### Example 7: Multi-turn Conversation ⭐ New
+Because RAG is owned by a dedicated `RAGAgent` in P2. This keeps responsibilities clean and avoids tool routing confusion or missing-tool errors.
 
-```bash
-python main.py
-# Select option 2: Multi-turn Conversation Mode
-# Conversation 1: "Create a test.py file"
-# Conversation 2: "Write a function to print Hello in that file"
-# Conversation 3: "Run that file"
-# The agent will remember the context of test.py
-```
+### 11.2 Why doesn’t the final answer simply dump raw chunks and metadata?
 
-## ⚙️ Command-line Arguments
+Because the intended RAG behavior is retrieval-augmented generation, not retrieval-only output. Retrieved contexts are used to ground generation, then the answer is synthesized for the user.
 
-```
-python main.py [task] [options]
+### 11.3 Why does Docker sometimes fall back automatically?
 
-Positional Arguments:
-  task                  Task description to execute (optional)
+The runtime checks Docker visibility before execution. If the current Python process cannot see `docker.exe`, the system downgrades to non-Docker execution instead of failing much later.
 
-Optional Arguments:
-  -h, --help           Show help message
-  --api-key KEY        API key
-  --provider PROVIDER  LLM provider (deepseek/openai/claude/gemini, default: deepseek) ⭐ New
-  --model MODEL        Model name (default based on provider)
-  --base-url URL       API base URL (optional, uses provider default) ⭐ New
-  --max-steps N        Maximum steps (default: 100)
-  --temperature T      Temperature 0.0-2.0 (default: 0.7)
-  --show-steps         Show execution steps
-  --interactive        Force interactive mode
-```
+### 11.4 Why doesn’t every memory event become long-term memory immediately?
 
-**Note**: Default values can be permanently modified via `config.json`
+Because multi-agent memory uses:
 
-## 🎨 Interactive Menu Features
+- quality filtering
+- human approval for selected categories
+- asynchronous write paths
 
-### 1️⃣ Execute New Task
-Enter a task description, and the agent will automatically execute and display results. Each execution is a fresh conversation.
+## 12. Recommended Reading for Developers
 
-### 2️⃣ Multi-turn Conversation Mode ⭐ New
-Enter continuous conversation mode where the agent remembers all conversation history and tool execution results:
-- Type `exit` to quit conversation mode
-- Type `reset` to clear conversation history
-- The agent remembers file names, variables, and other context information
+If you want to extend the project, start with:
 
-### 3️⃣ View Tool List
-View all available tools and their function descriptions.
+- [`ENGINEERING_P0.md`](./ENGINEERING_P0.md)
+- [`ENGINEERING_P1.md`](./ENGINEERING_P1.md)
+- [`ENGINEERING_P2.md`](./ENGINEERING_P2.md)
+- [`docs/technical_notes`](./docs/technical_notes)
 
-### 4️⃣ Configuration Settings ⭐ Enhanced
-Dynamically adjust runtime parameters and optionally save permanently:
-- **LLM Provider** (provider): deepseek/openai/claude/gemini ⭐ New
-- **Model Name** (model): Choose based on provider
-- **Base URL** (base_url): API base URL ⭐ New
-- **Max Steps** (max_steps): 1-200 (default: 100)
-- **Temperature** (temperature): 0.0-2.0 (default: 0.7)
-- **Show Steps** (show_steps): Yes/No
+Recommended extension areas:
 
-After modification, you can choose to save to `config.json`, which will be automatically loaded on next startup.
+- new domain RAG skills
+- new multi-agent profiles
+- richer code execution tools
+- additional memory templates and approval policies
+- dashboard visualization improvements
 
-### 5️⃣ View Skills List ⭐ v1.4.0 New
-View all available expert skills and their status:
-- Display skill name, description, keywords, and specialized tool count
-- Distinguish between built-in and custom skills
-- Show current activation status
+## 13. Acknowledgement and Citation
 
-### 6️⃣ Exit Program
-Safely exit the application.
+CogniComm-Agent is the result of ongoing engineering work in this repository, and it was also meaningfully inspired by:
 
-## ⚙️ Configuration Management
+- [`hwfengcs/DM-Code-Agent`](https://github.com/hwfengcs/DM-Code-Agent)
 
-### Default Configuration
-- **LLM Provider**: deepseek
-- **Model**: deepseek-chat
-- **Base URL**: https://api.deepseek.com
-- **Max Steps**: 100
-- **Temperature**: 0.7
-- **Show Steps**: No
+We appreciate that project for its early ideas around coding agents, tooling structure, and practical implementation direction. If you build on this repository in a paper, report, or derivative project, we encourage you to acknowledge that upstream inspiration as well.
 
-### Persistent Configuration
-1. Start the program and select "Configuration Settings"
-2. Modify parameters as prompted (including switching model providers)
-3. Choose `y` to save as permanent configuration
-4. Configuration is saved in the `config.json` file
+## 14. License
 
-Configuration file example (`config.json.example`):
-```json
-{
-  "provider": "deepseek",
-  "model": "deepseek-chat",
-  "base_url": "https://api.deepseek.com",
-  "max_steps": 100,
-  "temperature": 0.7,
-  "show_steps": false
-}
-```
-
-**Note**:
-- Gemini uses the official Google SDK and doesn't need `base_url` configuration
-- Other providers can customize `base_url` as needed (e.g., using a proxy)
-
-**Tip**: `config.json` is added to `.gitignore` and will not be committed to git
-
-## 💡 Tips and Tricks
-
-1. **Continuous Tasks** - Use interactive mode to avoid repeatedly starting the program
-2. **Debug Tasks** - Use `--show-steps` to view detailed execution process
-3. **Experimental Tasks** - Increase temperature value for more creative results
-4. **Complex Tasks** - Increase max-steps to allow more reasoning steps (default is 100)
-5. **Quick Testing** - Command-line mode is suitable for scripts and automation
-
-
-## 🔄 Project Structure
-
-```
-dm-code-agent/
-├── main.py                         # Main program entry (Interactive CLI)
-├── check_mcp_env.py                # MCP environment check tool (v1.2.0)
-├── dm_agent/                       # Core agent package
-│   ├── __init__.py                # Package initialization and public API
-│   ├── core/                      # Core Agent implementation
-│   │   ├── __init__.py
-│   │   ├── agent.py              # ReactAgent core logic
-│   │   └── planner.py            # Task planner (v1.1.0)
-│   ├── clients/                   # LLM clients
-│   │   ├── __init__.py
-│   │   ├── base_client.py        # Base client class
-│   │   ├── deepseek_client.py    # DeepSeek client
-│   │   ├── openai_client.py      # OpenAI client
-│   │   ├── claude_client.py      # Claude client
-│   │   ├── gemini_client.py      # Gemini client
-│   │   └── llm_factory.py        # Client factory
-│   ├── mcp/                       # MCP integration (v1.2.0)
-│   │   ├── __init__.py
-│   │   ├── client.py             # MCP client
-│   │   ├── config.py             # MCP configuration management
-│   │   └── manager.py            # MCP manager
-│   ├── skills/                    # Skill expert system (v1.4.0) ⭐ New
-│   │   ├── __init__.py           # Module exports
-│   │   ├── base.py               # Skill base class and metadata
-│   │   ├── selector.py           # Skill auto-selector
-│   │   ├── manager.py            # Skill manager
-│   │   ├── builtin/              # Built-in skills
-│   │   │   ├── __init__.py
-│   │   │   ├── python_expert.py  # Python Expert
-│   │   │   ├── db_expert.py      # Database Expert
-│   │   │   └── frontend_dev.py   # Frontend Dev Expert
-│   │   └── custom/               # Custom skills (JSON files)
-│   │       └── .gitkeep
-│   ├── memory/                    # Memory and context management (v1.1.0)
-│   │   ├── __init__.py
-│   │   └── context_compressor.py # Context compressor
-│   ├── tools/                     # Toolset
-│   │   ├── __init__.py
-│   │   ├── base.py               # Tool base class
-│   │   ├── file_tools.py         # File operation tools
-│   │   ├── code_analysis_tools.py # Code analysis tools (v1.1.0)
-│   │   └── execution_tools.py    # Code execution tools
-│   └── prompts/                   # Prompt management
-│       ├── __init__.py
-│       ├── system_prompts.py     # Prompt building functions
-│       └── code_agent_prompt.md  # Prompt template
-├── requirements.txt               # Python dependencies
-├── .env.example                   # Environment variable configuration template
-├── config.json.example            # Configuration file example
-├── mcp_config.json.example        # MCP configuration example (v1.2.0)
-├── .gitignore                     # Git ignore rules
-├── MCP_GUIDE.md                   # MCP integration guide (v1.2.0)
-├── SKILL_GUIDE.md                 # Skill system guide (v1.4.0) ⭐ New
-├── README.md                      # Chinese documentation
-└── README_EN.md                   # English documentation
-```
-
-## 🤝 Contributing
-
-Issues and Pull Requests are welcome!
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-**Start Learning AI Agents!** 🚀
+Please follow the license published for this repository. If you plan to distribute it publicly, adding an explicit `LICENSE` file at the repository root is recommended.
