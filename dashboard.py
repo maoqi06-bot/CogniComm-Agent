@@ -8,6 +8,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+from dm_agent.memory.memory_admin import (
+    RESET_CONFIRMATION_TEXT,
+    delete_long_term_memory,
+    delete_long_term_memory_category,
+    filter_memory_rows,
+    is_reset_confirmed,
+    load_memory_metadata,
+    quarantine_memory_files,
+)
+
 # --- 1. 初始化路径 ---
 ROOT = Path(__file__).resolve().parent
 # 确保路径与你的数据存储结构一致
@@ -19,6 +29,7 @@ RAGAS_LOG = ROOT / "data" / "ragas_eval.log"
 MULTI_AGENT_MEMORY_TIMELINE = ROOT / "data" / "multi_agent_memory_timeline.jsonl"
 MULTI_AGENT_MEMORY_APPROVALS = ROOT / "data" / "multi_agent_memory_approvals.json"
 MEMORY_REPLAY_EXPORT_DIR = ROOT / "task" / "memory_replay_exports"
+LONG_TERM_MEMORY_METADATA = ROOT / "dm_agent" / "data" / "memory" / "memory_metadata.json"
 
 st.set_page_config(page_title="DM-Agent RAG 控制塔", layout="wide")
 
@@ -688,6 +699,112 @@ if page == "Multi-Agent Memory":
                         st.rerun()
     else:
         st.info("No pending multi-agent memory approvals.")
+
+    st.subheader("Long-Term Memory Store")
+    metadata = load_memory_metadata(LONG_TERM_MEMORY_METADATA)
+    memory_rows = metadata.get("memories", [])
+    st.caption(
+        f"Metadata file: {LONG_TERM_MEMORY_METADATA} | "
+        f"Total memories: {metadata.get('total_memories', 0)}"
+    )
+
+    if not memory_rows:
+        st.info("No long-term memories found. The store may be empty or already reset.")
+    else:
+        categories = ["ALL"] + sorted({str(row.get("category", "")) for row in memory_rows if row.get("category")})
+        sources = ["ALL"] + sorted({str(row.get("source", "")) for row in memory_rows if row.get("source")})
+        tags = sorted(
+            {
+                str(tag)
+                for row in memory_rows
+                for tag in row.get("tags", [])
+                if str(tag).strip()
+            }
+        )
+        filter_col_a, filter_col_b, filter_col_c, filter_col_d = st.columns(4)
+        with filter_col_a:
+            selected_memory_category = st.selectbox("Memory category", categories)
+        with filter_col_b:
+            selected_memory_source = st.selectbox("Memory source", sources)
+        with filter_col_c:
+            selected_memory_tag = st.selectbox("Memory tag", ["ALL"] + tags)
+        with filter_col_d:
+            memory_query = st.text_input("Search memory")
+
+        visible_rows = filter_memory_rows(
+            memory_rows,
+            category=selected_memory_category,
+            source=selected_memory_source,
+            tag=selected_memory_tag,
+            query=memory_query,
+        )
+        st.metric("Visible memories", len(visible_rows))
+
+        df_long_term = pd.DataFrame(visible_rows)
+        display_cols = [
+            col
+            for col in [
+                "id",
+                "category",
+                "priority",
+                "importance_score",
+                "source",
+                "created_at",
+                "updated_at",
+                "content",
+                "tags",
+            ]
+            if col in df_long_term.columns
+        ]
+        if display_cols:
+            st.dataframe(df_long_term[display_cols], use_container_width=True)
+
+        delete_col_a, delete_col_b = st.columns(2)
+        with delete_col_a:
+            memory_ids = [str(row.get("id", "")) for row in visible_rows if row.get("id")]
+            if memory_ids:
+                selected_memory_id = st.selectbox("Memory ID to delete", memory_ids)
+                if st.button("Delete selected memory"):
+                    try:
+                        if delete_long_term_memory(selected_memory_id):
+                            st.success(f"Deleted memory: {selected_memory_id}")
+                            st.rerun()
+                        else:
+                            st.warning(f"Memory not found: {selected_memory_id}")
+                    except Exception as exc:
+                        st.error(f"Failed to delete memory: {exc}")
+            else:
+                st.info("No visible memory IDs to delete.")
+        with delete_col_b:
+            deletable_categories = [item for item in categories if item != "ALL"]
+            if deletable_categories:
+                category_to_delete = st.selectbox("Category to delete", deletable_categories)
+                if st.button("Delete category"):
+                    try:
+                        deleted_count = delete_long_term_memory_category(category_to_delete)
+                        st.success(f"Deleted {deleted_count} memories from category: {category_to_delete}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Failed to delete category: {exc}")
+            else:
+                st.info("No memory categories to delete.")
+
+    with st.expander("Reset all memories"):
+        st.warning(
+            "This quarantines current long-term memory files plus multi-agent timeline/approvals, "
+            "then recreates an empty long-term memory directory."
+        )
+        confirmation = st.text_input(f"Type {RESET_CONFIRMATION_TEXT} to reset")
+        if st.button("Quarantine and reset all memory"):
+            if not is_reset_confirmed(confirmation):
+                st.error(f"Confirmation must exactly match: {RESET_CONFIRMATION_TEXT}")
+            else:
+                try:
+                    quarantine_dir = quarantine_memory_files(ROOT)
+                    st.success(f"Memory files quarantined to: {quarantine_dir}")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to reset memory files: {exc}")
 
     st.subheader("Timeline And Task Call Graph")
     if not events:
