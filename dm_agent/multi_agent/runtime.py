@@ -1103,6 +1103,7 @@ class TaskScheduler:
             agent = agent_map.get(task.type)
             if agent:
                 task.status = "running"
+                task.agent_name = getattr(agent, "name", "") or task.agent_name
                 future = self._executor.submit(self._execute_task, task, agent)
                 futures[task.id] = future
             else:

@@ -281,15 +281,31 @@ class LongTermMemoryStore:
             memory_id = metadata.get("memory_id") or chunk_id
             if memory_id in self._memory_index:
                 continue
+            if not self._is_recoverable_vector_memory(chunk.content, metadata):
+                continue
 
             category = self._parse_category(metadata.get("category"))
             priority = self._parse_priority(metadata.get("priority"))
             importance_score = self._safe_float(metadata.get("importance_score"), default=0.5)
             source = str(metadata.get("source") or "recovered_from_vector_store")
+            now = time.time()
+            created_at = self._safe_float(metadata.get("created_at"), default=now)
+            updated_at = self._safe_float(metadata.get("updated_at"), default=created_at)
             entry_metadata = {
                 key: value
                 for key, value in metadata.items()
-                if key not in {"memory_id", "category", "priority", "importance_score", "source"}
+                if key not in {
+                    "memory_id",
+                    "category",
+                    "priority",
+                    "importance_score",
+                    "source",
+                    "tags",
+                    "created_at",
+                    "updated_at",
+                    "is_pinned",
+                    "decay_factor",
+                }
             }
 
             entry = MemoryEntry(
@@ -298,13 +314,47 @@ class LongTermMemoryStore:
                 category=category,
                 priority=priority,
                 importance_score=importance_score,
+                tags=self._safe_tags(metadata.get("tags")),
                 metadata=entry_metadata,
                 source=source,
+                is_pinned=bool(metadata.get("is_pinned", False)),
+                decay_factor=self._safe_float(metadata.get("decay_factor"), default=1.0),
+                created_at=created_at,
+                updated_at=updated_at,
+                last_accessed=self._safe_float(metadata.get("last_accessed"), default=updated_at),
             )
             self._memory_index[entry.id] = entry
             self._category_index[entry.category].add(entry.id)
             recovered += 1
         return recovered
+
+    def _is_recoverable_vector_memory(self, content: str, metadata: Dict[str, Any]) -> bool:
+        text = str(content or "").strip()
+        if len(text) < 20:
+            return False
+        if self._looks_mojibake(text):
+            return False
+        source = str(metadata.get("source") or "").strip()
+        if source == "recovered_from_vector_store":
+            return False
+        lowered = text.lower()
+        low_value_markers = [
+            "no relevant knowledge found",
+            "long-term memory lookup missed",
+            "no relevant user preference memory matched",
+            "skipped low-value",
+        ]
+        return not any(marker in lowered for marker in low_value_markers)
+
+    def _looks_mojibake(self, text: str) -> bool:
+        markers = [
+            "鐢", "鍩", "妫", "绱", "浠", "璧", "銆", "€", "锛", "涓", "鏂", "娴", "澶",
+        ]
+        sample = str(text or "")[:1200]
+        if not sample:
+            return False
+        marker_hits = sum(sample.count(marker) for marker in markers)
+        return marker_hits >= 4 and (marker_hits / max(1, len(sample))) > 0.015
 
     def _parse_category(self, raw_value: Any) -> MemoryCategory:
         if isinstance(raw_value, MemoryCategory):
@@ -335,6 +385,29 @@ class LongTermMemoryStore:
             return float(raw_value)
         except Exception:
             return default
+
+    def _safe_tags(self, raw_value: Any) -> Set[str]:
+        if isinstance(raw_value, (set, list, tuple)):
+            return {str(tag) for tag in raw_value if str(tag).strip()}
+        if isinstance(raw_value, str) and raw_value.strip():
+            return {raw_value.strip()}
+        return set()
+
+    def _build_vector_metadata(self, entry: MemoryEntry) -> Dict[str, Any]:
+        return {
+            "memory_id": entry.id,
+            "category": entry.category.value,
+            "priority": entry.priority.value,
+            "importance_score": entry.importance_score,
+            "source": entry.source,
+            "tags": list(entry.tags),
+            "created_at": entry.created_at,
+            "updated_at": entry.updated_at,
+            "last_accessed": entry.last_accessed,
+            "is_pinned": entry.is_pinned,
+            "decay_factor": entry.decay_factor,
+            **entry.metadata,
+        }
 
     def _save_metadata(self):
         """保存记忆元数据到磁盘。"""
@@ -410,12 +483,7 @@ class LongTermMemoryStore:
                 document_id=entry.id,
                 content=content,
                 chunk_index=0,
-                metadata={
-                    "memory_id": entry.id,
-                    "category": entry.category.value,
-                    "priority": entry.priority.value,
-                    **entry.metadata,
-                },
+                metadata=self._build_vector_metadata(entry),
             )
             self.vector_store.add_chunks([chunk])
             self._memory_index[entry.id] = entry
@@ -499,6 +567,8 @@ class LongTermMemoryStore:
             # 如果内容改变，需要重建向量（简单策略：删除后重新添加）
             if content is not None:
                 self._rebuild_vector(memory_id)
+            elif memory_id in self.vector_store.id_to_chunk:
+                self.vector_store.id_to_chunk[memory_id].metadata = self._build_vector_metadata(entry)
 
             self._save()
             return entry
@@ -841,12 +911,7 @@ class LongTermMemoryStore:
             document_id=entry.id,
             content=entry.content,
             chunk_index=0,
-            metadata={
-                "memory_id": entry.id,
-                "category": entry.category.value,
-                "priority": entry.priority.value,
-                **entry.metadata,
-            },
+            metadata=self._build_vector_metadata(entry),
         )
 
         # 重新生成向量

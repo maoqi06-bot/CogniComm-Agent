@@ -330,8 +330,9 @@ class MultiAgentMemoryHub:
         summary = self._summarize_result(getattr(task, "result", None))
         if not summary:
             return
+        agent_name = self._resolve_agent_name(task)
         self.add_event(
-            getattr(task, "agent_name", "") or "unknown_agent",
+            agent_name,
             "subtask_result",
             f"{getattr(task, 'id', 'subtask')} [{getattr(getattr(task, 'type', None), 'value', '')}]: {summary}",
             shared=True,
@@ -359,19 +360,36 @@ class MultiAgentMemoryHub:
         policy = self._policy_for("orchestrator")
         if not policy.write_long_term or not policy.write_task_summary:
             return
+        if not self._is_meaningful_task_summary(final_answer, completed_count, failed_count):
+            self._persist_event(
+                MemoryEvent(
+                    agent_name="orchestrator",
+                    kind="long_term_write_skipped",
+                    content="Skipped low-value task_summary memory.",
+                    metadata={"memory_kind": "task_summary", "reason": "quality_filter"},
+                ),
+                shared=True,
+            )
+            return
         content = (
-            f"Multi-agent task summary: {original_task}\n"
+            f"{original_task}\n"
             f"Completed subtasks: {completed_count}, failed subtasks: {failed_count}.\n"
             f"Final answer preview: {final_answer[:1200]}"
         )
-        self.store_agent_memory(
-            "orchestrator",
-            "task_summary",
-            content,
-            metadata={
+        template = self._task_summary_template(
+            completed_count=completed_count,
+            failed_count=failed_count,
+            final_answer=final_answer,
+        )
+        self._submit_long_term_write(
+            template,
+            f"{template.title}: {content}",
+            {
                 "task_id": self._current_task_id,
                 "completed_count": completed_count,
                 "failed_count": failed_count,
+                "agent_name": "orchestrator",
+                "memory_kind": "task_summary",
             },
         )
 
@@ -682,13 +700,21 @@ class MultiAgentMemoryHub:
         content: str,
         metadata: Dict[str, Any],
     ) -> bool:
+        text = str(content or "").strip()
+        if not text or self._looks_mojibake(text) or self._is_low_information_text(text):
+            return False
+        if memory_kind == "task_summary":
+            return self._is_meaningful_task_summary(
+                text,
+                int(metadata.get("completed_count", 0) or 0),
+                int(metadata.get("failed_count", 0) or 0),
+            )
         if memory_kind == "user_preference":
-            return self._is_explicit_preference(str(content or ""))
+            return self._is_explicit_preference(text)
         if memory_kind != "engineering_experience":
             return True
         if metadata.get("cancelled"):
             return False
-        text = str(content or "").strip()
         if len(text) < self.config.engineering_experience_min_chars:
             return False
         lowered = text.lower()
@@ -705,6 +731,84 @@ class MultiAgentMemoryHub:
         if any(marker in lowered for marker in weak_markers):
             return False
         return any(keyword.lower() in lowered for keyword in self.config.engineering_experience_keywords)
+
+    def _resolve_agent_name(self, task: Any) -> str:
+        raw_name = str(getattr(task, "agent_name", "") or "").strip()
+        if raw_name:
+            return raw_name
+        task_type = getattr(getattr(task, "type", None), "value", "")
+        if task_type == "knowledge_query":
+            return "rag_agent"
+        if task_type in {"code_execution", "analysis"}:
+            return "code_agent"
+        return "orchestrator"
+
+    def _task_summary_template(
+        self,
+        *,
+        completed_count: int,
+        failed_count: int,
+        final_answer: str,
+    ) -> MemoryWriteTemplate:
+        base = self.config.write_templates.get("task_summary", MemoryWriteTemplate())
+        total = max(1, completed_count + failed_count)
+        success_ratio = completed_count / total
+        importance = 0.48 + (0.2 * success_ratio)
+        if len(str(final_answer or "")) > 1200:
+            importance += 0.04
+        priority = "high" if success_ratio >= 0.9 and completed_count >= 3 else "normal"
+        if success_ratio < 0.5:
+            priority = "low"
+            importance = min(importance, 0.5)
+        return MemoryWriteTemplate(
+            category=base.category,
+            priority=priority,
+            importance_score=max(0.35, min(0.75, importance)),
+            tags=list(dict.fromkeys([*base.tags, f"success_ratio:{success_ratio:.2f}"])),
+            source=base.source,
+            title=base.title,
+        )
+
+    def _is_meaningful_task_summary(
+        self,
+        text: str,
+        completed_count: int,
+        failed_count: int,
+    ) -> bool:
+        content = str(text or "").strip()
+        if completed_count <= 0 or len(content) < 120:
+            return False
+        lowered = content.lower()
+        low_value_markers = [
+            "no results available",
+            "no relevant knowledge found",
+            "long-term memory lookup missed",
+            "skipped low-value",
+        ]
+        if any(marker in lowered for marker in low_value_markers):
+            return False
+        return completed_count >= failed_count or failed_count == 0
+
+    def _is_low_information_text(self, text: str) -> bool:
+        lowered = str(text or "").strip().lower()
+        if len(lowered) < 20:
+            return True
+        low_value_exact = {
+            "no relevant knowledge found",
+            "long-term memory lookup missed.",
+            "no relevant user preference memory matched.",
+        }
+        return lowered in low_value_exact
+
+    def _looks_mojibake(self, text: str) -> bool:
+        markers = [
+            "鐢", "鍩", "妫", "绱", "浠", "璧", "銆", "€", "锛", "涓", "鏂", "娴", "澶",
+        ]
+        sample = str(text or "")[:1200]
+        if not sample:
+            return False
+        marker_hits = sum(sample.count(marker) for marker in markers)
+        return marker_hits >= 4 and (marker_hits / max(1, len(sample))) > 0.015
 
     def _capture_user_preferences(self, task: str) -> None:
         for preference in self._extract_explicit_user_preferences(task):
