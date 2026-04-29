@@ -269,7 +269,25 @@ def run_multi_agent_preflight(config: Config, client: Any, use_docker: bool) -> 
                 )
                 if result.returncode == 0:
                     version = (result.stdout or result.stderr).strip()
-                    print(f"{Fore.GREEN}      ✓ Docker 预检通过: {docker_path} ({version}){Style.RESET_ALL}")
+                    daemon_result = subprocess.run(
+                        [docker_path, "info", "--format", "{{.ServerVersion}}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    if daemon_result.returncode == 0:
+                        server_version = daemon_result.stdout.strip()
+                        print(
+                            f"{Fore.GREEN}      ✓ Docker 预检通过: {docker_path} "
+                            f"({version}; daemon {server_version}){Style.RESET_ALL}"
+                        )
+                    else:
+                        docker_enabled = False
+                        details = (daemon_result.stderr or daemon_result.stdout).strip()
+                        print(
+                            f"{Fore.YELLOW}      ⚠ Docker CLI 可用但 daemon 不可用: "
+                            f"{details or 'docker info returned non-zero'}，自动降级为非 Docker 模式{Style.RESET_ALL}"
+                        )
                 else:
                     docker_enabled = False
                     details = (result.stderr or result.stdout).strip()

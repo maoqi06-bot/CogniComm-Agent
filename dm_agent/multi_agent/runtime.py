@@ -732,9 +732,33 @@ class DockerRunner:
         diagnostics["returncode"] = result.returncode
         diagnostics["stdout"] = result.stdout.strip()
         diagnostics["stderr"] = result.stderr.strip()
-        diagnostics["available"] = result.returncode == 0
         if result.returncode != 0:
+            diagnostics["available"] = False
             diagnostics["error"] = result.stderr.strip() or result.stdout.strip() or "docker --version failed"
+            return diagnostics
+
+        try:
+            daemon_result = subprocess.run(
+                [docker_path, "info", "--format", "{{.ServerVersion}}"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except Exception as exc:
+            diagnostics["available"] = False
+            diagnostics["error"] = f"docker daemon check failed: {exc}"
+            return diagnostics
+
+        diagnostics["daemon_returncode"] = daemon_result.returncode
+        diagnostics["daemon_stdout"] = daemon_result.stdout.strip()
+        diagnostics["daemon_stderr"] = daemon_result.stderr.strip()
+        diagnostics["available"] = daemon_result.returncode == 0
+        if daemon_result.returncode != 0:
+            diagnostics["error"] = (
+                daemon_result.stderr.strip()
+                or daemon_result.stdout.strip()
+                or "docker daemon is not reachable"
+            )
         return diagnostics
 
     def execute(
