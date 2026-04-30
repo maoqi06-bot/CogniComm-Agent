@@ -243,6 +243,67 @@ class TestMemoryManagerRequiresFaiss(unittest.TestCase):
         print("[OK] Manager creation (mock)")
 
 
+class TestMemoryManagerQualityFilters(unittest.TestCase):
+    def test_operational_encoding_failures_are_filtered_from_retrieval(self):
+        from unittest.mock import MagicMock
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryEntry, MemoryCategory, MemoryPriority, MemorySearchResult
+
+        bad_entry = MemoryEntry(
+            id="bad",
+            content="RAG \u5de5\u5177 mcp_wireless-rag_search \u56e0 GBK \u7f16\u7801\u4e0e emoji \u8f93\u51fa\u4e0d\u517c\u5bb9\u800c\u5931\u8d25\u3002",
+            category=MemoryCategory.SKILL_KNOWLEDGE,
+            priority=MemoryPriority.HIGH,
+            tags={"error", "GBK", "emoji"},
+        )
+        good_entry = MemoryEntry(
+            id="good",
+            content="\u7528\u6237\u6b63\u5728\u5b66\u4e60 ISAC \u4e0e\u65e0\u7ebf\u901a\u4fe1\u57fa\u7840\u6982\u5ff5\u3002",
+            category=MemoryCategory.PROJECT_CONTEXT,
+            priority=MemoryPriority.NORMAL,
+            tags={"wireless", "isac"},
+        )
+
+        store = MagicMock()
+        store.search.return_value = [
+            MemorySearchResult(entry=bad_entry, score=0.99),
+            MemorySearchResult(entry=good_entry, score=0.8),
+        ]
+        store.update.return_value = None
+
+        manager = MemoryManager(memory_store=store, llm_client=None)
+        result = manager.retrieve_for_context("\u68c0\u7d22 ISAC", limit=5)
+
+        self.assertEqual([item.entry.id for item in result.memories], ["good"])
+        self.assertNotIn("GBK", result.enhanced_context)
+
+    def test_operational_encoding_failures_are_not_stored_after_extraction(self):
+        from unittest.mock import MagicMock
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryEntry, MemoryCategory, MemoryPriority
+
+        store = MagicMock()
+        manager = MemoryManager(memory_store=store, llm_client=None)
+
+        manager._extract_by_rules = MagicMock(return_value=[
+            MemoryEntry(
+                id="",
+                content="RAG \u5de5\u5177 mcp_wireless-rag_search \u5728\u5f53\u524d\u73af\u5883\u56e0 GBK \u7f16\u7801\u9519\u8bef\u65e0\u6cd5\u6267\u884c\u3002",
+                category=MemoryCategory.SKILL_KNOWLEDGE,
+                priority=MemoryPriority.HIGH,
+                tags={"error", "troubleshooting"},
+            )
+        ])
+
+        stored = manager.extract_and_store(
+            conversation_history=[{"role": "user", "content": "\u68c0\u7d22 ISAC"}],
+            current_task="\u68c0\u7d22 ISAC",
+        )
+
+        self.assertEqual(stored, [])
+        store.add.assert_not_called()
+
+
 def run_tests():
     """运行所有测试。"""
     print("\n" + "=" * 60)
@@ -258,6 +319,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestMemoryCategoryPriority))
     suite.addTests(loader.loadTestsFromTestCase(TestLongTermMemoryStoreRequiresFaiss))
     suite.addTests(loader.loadTestsFromTestCase(TestMemoryManagerRequiresFaiss))
+    suite.addTests(loader.loadTestsFromTestCase(TestMemoryManagerQualityFilters))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

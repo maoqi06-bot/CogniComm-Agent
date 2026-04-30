@@ -1,133 +1,132 @@
-# Default Provider Regression and Backward Compatibility
+# Default Provider Routing Correction and Current Behavior
 
 ## Background
 
-After the runtime-preflight work landed, multi-agent startup began failing immediately with:
+During the 2026-04-21 runtime-preflight work, we temporarily changed the startup routing logic to prefer the legacy DeepSeek path in order to verify whether:
 
-- `401 Invalid token`
+- the new preflight had broken API access; or
+- the real issue was simply that the process had been silently routed to a different provider.
 
-At first glance this looked like a regression caused by:
+That temporary rollback was useful for diagnosis, but it was **not** the intended long-term product behavior.
 
-- embedding-model alignment;
-- OpenAI-compatible gateway fallback changes;
-- or the new preflight itself.
+The current product requirement is:
 
-However, the new diagnostics made the actual problem visible:
+- the default main LLM route should remain:
+  - `provider = openai`
+  - `model = gpt-5`
+  - `base_url = https://sg.uiuiapi.com/v1/`
+- embedding-backed RAG and long-term memory should remain independently configurable.
 
-- the runtime was starting with `provider = openai`;
-- the model was `gpt-5`;
-- the base URL was `https://sg.uiuiapi.com/v1/`;
-- and the key source was `OPENAI_API_KEY`.
+## What Was Learned
 
-This mattered because earlier successful runs in the same workspace were likely using the legacy DeepSeek path instead:
+The earlier failure pattern showed two separate problems:
 
-- `provider = deepseek`
-- `model = deepseek-chat`
-- `base_url = https://api.deepseek.com`
-- `DEEPSEEK_API_KEY`
+1. **main chat route**
+   - startup had been routed to OpenAI-compatible `gpt-5`;
+   - when the configured key was invalid, preflight failed immediately with `401 Invalid token`.
 
-In other words, the preflight did not break a previously healthy API path. It exposed that the default runtime route had already shifted to a different provider configuration.
+2. **embedding route**
+   - long-term memory and RAG retrieval used a separate OpenAI-compatible embedding path;
+   - even after the main chat route changed, embedding-backed retrieval could still fail independently.
 
-## Root Cause
+This distinction matters because the main LLM provider and the embedding provider are no longer assumed to be the same.
 
-The regression came from overly aggressive defaults in `main.py`.
+## Current Design
 
-`Config` had been changed to default to:
+### Main LLM defaults
+
+`main.py` now keeps the product-facing default route as:
 
 - `provider = "openai"`
 - `model = "gpt-5"`
 - `base_url = "https://sg.uiuiapi.com/v1/"`
 
-Then `parse_args()` used those values whenever there was no saved `config.json`.
+`parse_args()` resolves defaults in this order:
 
-That meant:
+1. saved `config.json`
+2. `DEFAULT_PROVIDER` environment override
+3. `Config` defaults
 
-1. no explicit CLI provider was required;
-2. no saved config was required;
-3. simply having both `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` in `.env` was enough for the app to start preferring the OpenAI-compatible route.
+This means:
 
-If the configured OpenAI-compatible key was invalid, expired, or mismatched with the gateway, the new preflight failed immediately with `401 Invalid token`.
+- if the user explicitly saved a provider, that wins;
+- if the user explicitly sets `DEFAULT_PROVIDER`, that wins;
+- otherwise the project starts on the documented OpenAI-compatible default route.
 
-This created the impression that the preflight change had broken all API access, when the actual issue was a default-provider routing regression.
+### Embedding defaults
 
-## Fix Implemented
+Embeddings are now intentionally separated from the main LLM route and configured through:
 
-File:
+- `EMBEDDING_PROVIDER`
+- `EMBEDDING_API_KEY`
+- `EMBEDDING_BASE_URL`
+- `EMBEDDING_MODEL`
+- `EMBEDDING_DIMENSION`
 
-- `main.py`
+The compatibility baseline for embeddings currently defaults to:
 
-### 1. Restore legacy-safe config defaults
+- `text-embedding-ada-002`
 
-`Config` defaults were changed back to the historical DeepSeek-oriented values:
+This preserves the older RAG behavior more closely while allowing the main chat route to stay on `gpt-5`.
 
-- `provider = "deepseek"`
-- `model = "deepseek-chat"`
-- `base_url = "https://api.deepseek.com"`
+## Why the Earlier DeepSeek Logs Still Appeared
 
-This avoids forcing OpenAI-compatible routing in environments that were previously relying on DeepSeek.
+Those logs were generated while the temporary rollback-to-DeepSeek version was active.
 
-### 2. Add inferred default-provider selection
+They do **not** reflect the current code state anymore.
 
-New helper functions were introduced:
+A direct runtime check now resolves:
 
-- `has_usable_api_key(provider)`
-- `resolve_default_provider(saved_config)`
-- `resolve_default_model(saved_config, provider)`
-- `resolve_default_base_url(saved_config, provider)`
+- `provider = openai`
+- `model = gpt-5`
+- `base_url = https://sg.uiuiapi.com/v1/`
 
-Behavior:
+So if a new run still shows DeepSeek, the likely sources are:
 
-1. if `config.json` explicitly defines a provider, use it;
-2. else if `DEFAULT_PROVIDER` is set and has a usable key, use it;
-3. else prefer the first usable provider found in env, in this order:
-   - `deepseek`
-   - `openai`
-   - `claude`
-   - `gemini`
-4. else fall back to the `Config` defaults.
+1. a saved `config.json`
+2. a `DEFAULT_PROVIDER=deepseek` environment variable
+3. an older process still running an outdated local copy
 
-This keeps the app backward compatible for existing `.env` files while still allowing explicit provider switching.
+## Practical Interpretation
 
-### 3. Keep explicit configuration authoritative
+If the main LLM route now starts as OpenAI-compatible and still fails, that failure should be interpreted as:
 
-The new inference only applies when the provider was not explicitly saved or passed in.
+- an OpenAI-compatible key / gateway issue;
 
-That means:
+not as:
 
-- explicit `config.json` settings still win;
-- explicit CLI `--provider` still wins;
-- only the implicit default path changed.
+- an embedding-model regression.
 
-## Why This Matters
+If the main LLM route succeeds but RAG / memory fails, that should be interpreted as:
 
-This change separates two very different concerns:
+- an embedding-specific key / gateway issue;
 
-1. **early diagnostics**
-   - preflight should fail fast when credentials are invalid;
-2. **default routing**
-   - the app should not silently switch users to a new provider path unless they explicitly asked for it.
+not as:
 
-With this fix, the preflight remains useful, but it no longer amplifies a provider-default regression.
+- the main provider routing being wrong.
 
-## Relationship to Earlier 2026-04-21 Notes
+## Relationship to Other 2026-04-21 Notes
 
-This note refines the interpretation of:
+This note supersedes the earlier temporary rollback interpretation and should now be read together with:
 
 - `2026-04-21_multi_agent_runtime_preflight_and_embedding_alignment.md`
 - `2026-04-21_openai_compatible_gateway_chat_completions_fallback.md`
+- `2026-04-21_embedding_provider_decoupling_and_ada_compatibility.md`
 
-Those changes improved observability and gateway compatibility, but they also made it clear that the workspace had drifted onto a different default provider path.
+Together, those notes describe the current intended architecture:
 
-The current fix restores backward-compatible startup behavior without removing the earlier diagnostics.
+- OpenAI-compatible `gpt-5` as the default main model
+- embedding runtime decoupled from the main model
+- early preflight for clearer diagnostics
 
 ## Follow-Up Suggestions
 
-1. Add a startup line showing whether the selected provider came from:
-   - CLI
+1. Add a menu-level runtime diagnostics command that separately tests:
+   - main LLM auth
+   - embedding auth
+   - Docker availability
+2. Surface the source of the selected provider in startup logs:
    - config file
-   - inferred env default
-2. Add a dedicated menu action for:
-   - provider connectivity diagnostics
-   - embedding diagnostics
-   - Docker diagnostics
-3. Consider persisting the last successful provider in `config.json` after a successful interactive run.
+   - env override
+   - default config
+3. Add a dedicated embedding connectivity probe to preflight, so RAG failures are visible before task decomposition begins.

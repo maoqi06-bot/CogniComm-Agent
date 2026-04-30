@@ -36,6 +36,18 @@ from dm_agent.rag.retriever import Retriever, HybridRetriever, get_shared_rerank
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_print(message: str) -> None:
+    """Print diagnostic text without crashing legacy Windows consoles."""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        sys.stdout.write(safe + "\n")
+        sys.stdout.flush()
+
+
 BASE_PATH = Path(__file__).parent.parent.parent
 TRACE_DIR = BASE_PATH / "data" / "traces"   # 新增
 
@@ -363,9 +375,9 @@ async def handle_call_tool(
     elif name == "search":
         skill_id = arguments.get("skill_id")
         query = arguments.get("query", "").strip()
-        print(f"🔍 [服务器] 收到 search 调用，arguments = {arguments}")
+        _safe_print(f"[MCP RAG] search called with arguments = {arguments}")
         trace_id = arguments.get("trace_id")
-        print(f"🔍 [服务器] trace_id = {trace_id}")
+        _safe_print(f"[MCP RAG] trace_id = {trace_id}")
         if not skill_id or not query:
             return [types.TextContent(type="text", text="错误：缺少 skill_id 或 query 参数")]
 
@@ -446,7 +458,7 @@ async def handle_call_tool(
 
             if trace_id:
                 # 追加到主程序 trace
-                print(trace_id)
+                _safe_print(f"[MCP RAG] append trace: {trace_id}")
                 _append_to_trace(trace_id, [recall_node_dict, rerank_node_dict], metadata)
             else:
                 # 创建独立 trace（使用 TraceManager 公开 API）

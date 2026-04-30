@@ -134,6 +134,32 @@ class MemoryManager:
         # 自定义提取回调
         self._extraction_callbacks: List[Callable[[str, str], Optional[MemoryEntry]]] = []
 
+    _OPERATIONAL_FAILURE_TERMS = (
+        "gbk",
+        "unicodeencodeerror",
+        "unicodedecodeerror",
+        "emoji",
+        "mcp_wireless-rag",
+        "mcp-wireless-rag",
+        "rag \u5de5\u5177",
+        "\u7f16\u7801\u9519\u8bef",
+        "\u7f16\u7801\u5f02\u5e38",
+        "\u68c0\u7d22\u672a\u80fd\u6267\u884c",
+        "\u65e0\u6cd5\u6267\u884c",
+        "\u5de5\u5177\u8f93\u51fa",
+        "\u73af\u5883\u7f16\u7801",
+    )
+
+    _OPERATIONAL_FAILURE_SOURCES = (
+        "mcp",
+        "rag",
+        "tool",
+        "run_python",
+        "run_shell",
+        "\u5de5\u5177",
+        "\u68c0\u7d22",
+    )
+
     # ==================== Public API ====================
 
     def retrieve_for_context(
@@ -194,6 +220,8 @@ class MemoryManager:
         seen_ids = set()
         unique_results = []
         for result in all_results:
+            if self._is_low_value_operational_memory(result.entry):
+                continue
             if result.entry.id not in seen_ids:
                 seen_ids.add(result.entry.id)
                 unique_results.append(result)
@@ -292,6 +320,8 @@ class MemoryManager:
         seen_hashes = set()
         unique_extracted = []
         for entry in extracted:
+            if self._is_low_value_operational_memory(entry):
+                continue
             content_hash = hashlib.md5(entry.content.encode()).hexdigest()
             if content_hash not in seen_hashes:
                 seen_hashes.add(content_hash)
@@ -437,6 +467,32 @@ class MemoryManager:
         }
 
     # ==================== Private Methods ====================
+
+    def _is_low_value_operational_memory(self, entry: MemoryEntry) -> bool:
+        """Return True for transient tool/runtime failures that should not become long-term memory."""
+        content = (entry.content or "").strip()
+        if not content:
+            return True
+
+        text_parts = [content]
+        if entry.metadata:
+            text_parts.extend(str(value) for value in entry.metadata.values())
+        if entry.tags:
+            text_parts.extend(str(tag) for tag in entry.tags)
+        haystack = " ".join(text_parts).lower()
+
+        has_failure_term = any(term.lower() in haystack for term in self._OPERATIONAL_FAILURE_TERMS)
+        has_tool_context = any(term.lower() in haystack for term in self._OPERATIONAL_FAILURE_SOURCES)
+        if has_failure_term and has_tool_context:
+            return True
+
+        error_tags = {"error", "failure", "failed", "troubleshooting", "bug"}
+        normalized_tags = {str(tag).lower() for tag in entry.tags or set()}
+        if error_tags.intersection(normalized_tags):
+            if any(term in haystack for term in ("gbk", "unicode", "emoji", "\u7f16\u7801")):
+                return True
+
+        return False
 
     def _build_enhanced_context(
         self,
