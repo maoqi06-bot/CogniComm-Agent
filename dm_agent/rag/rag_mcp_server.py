@@ -395,8 +395,10 @@ async def handle_call_tool(
 
         try:
             use_hybrid = instance.config.get("use_hybrid", DEFAULT_CONFIG["use_hybrid"])
-            raw_docs = instance.retriever.retrieve(query, k=k * 2) if use_hybrid else instance.retriever.retrieve(query, k=k)
-            results = instance.retriever.retrieve(query, k=k)
+            # 一次调用获取足够结果（k*3 覆盖粗排召回需求）
+            all_results = instance.retriever.retrieve(query, k=k * 3)
+            results = all_results[:k]
+            raw_docs = all_results[:k * 2] if use_hybrid else results
 
             if not results:
                 return [types.TextContent(type="text", text="未找到相关专业背景资料。")]

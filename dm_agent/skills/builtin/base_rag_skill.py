@@ -125,13 +125,15 @@ class BaseRAGSkill(BaseSkill):
 
                 # 3. 追踪：召回阶段 (Recall)
                 node_recall = tracer.add_node("Hybrid_Recall", "BM25 + FAISS", input_val=query)
-                print(f"🔍 [DEBUG] 开始检索 query: {query}")
 
-                raw_docs = self._retriever.retrieve(query, k=self.top_k * 2)
+                # 一次调用获取足够结果
+                k_request = arguments.get("k", self.top_k)
+                all_results = self._retriever.retrieve(query, k=k_request * 3)
+                raw_docs = all_results[:k_request * 2]  # 前2k作为原始召回
+                results = all_results[:k_request]  # 前k作为精排结果
 
                 # 【修复点】：增加对 raw_docs 的判空保护，防止列表推导式报错
-                found_count = len(raw_docs) if raw_docs else 0
-                print(f"🔍 [DEBUG] 检索结束，找到 {found_count} 条结果")
+                found_count = len(all_results) if all_results else 0
 
                 recall_results = []
                 if raw_docs:
@@ -144,8 +146,7 @@ class BaseRAGSkill(BaseSkill):
                 # 4. 追踪：重排阶段 (Rerank)
                 node_rerank = tracer.add_node("Rerank", self.reranker_model, input_val=found_count)
 
-                # 执行最终检索
-                results = self._retriever.retrieve(query, k=arguments.get("k", self.top_k))
+                # results 已在上面一次获取，无需再次检索
                 # --- [检查点：确保 self._tracer 存在且已注入] ---
                 if hasattr(self, "_tracer") and self._tracer is not None:
                     # 为 Ragas 准备上下文列表，存入全局 Trace 的 metadata

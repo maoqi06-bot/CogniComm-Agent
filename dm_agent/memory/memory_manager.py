@@ -134,6 +134,10 @@ class MemoryManager:
         # 自定义提取回调
         self._extraction_callbacks: List[Callable[[str, str], Optional[MemoryEntry]]] = []
 
+        # 检索缓存
+        self._retrieval_cache: Dict[str, MemoryRetrievalResult] = {}
+        self._cache_max_size = 50
+
     _OPERATIONAL_FAILURE_TERMS = (
         "gbk",
         "unicodeencodeerror",
@@ -148,6 +152,28 @@ class MemoryManager:
         "\u65e0\u6cd5\u6267\u884c",
         "\u5de5\u5177\u8f93\u51fa",
         "\u73af\u5883\u7f16\u7801",
+        "timeout",
+        "timed out",
+        "超时",
+        "rate limit",
+        "限流",
+        "429",
+        "500",
+        "503",
+        "connection refused",
+        "连接拒绝",
+        "temporary failure",
+        "临时失败",
+        "traceback",
+        "debug",
+        "stack trace",
+        "调试",
+        "日志",
+        "tempfile",
+        "tmp",
+        "临时",
+        "cache",
+        "缓存",
     )
 
     _OPERATIONAL_FAILURE_SOURCES = (
@@ -158,6 +184,10 @@ class MemoryManager:
         "run_shell",
         "\u5de5\u5177",
         "\u68c0\u7d22",
+        "search_memory",
+        "read_file",
+        "write_file",
+        "execute",
     )
 
     # ==================== Public API ====================
@@ -185,6 +215,12 @@ class MemoryManager:
             MemoryRetrievalResult: 包含检索结果和增强上下文的封装对象
         """
         limit = limit or self.retrieval_top_k
+
+        # 检查缓存
+        cache_key = f"{current_task}:{categories}:{limit}"
+        if cache_key in self._retrieval_cache:
+            return self._retrieval_cache[cache_key]
+
         all_results: List[MemorySearchResult] = []
 
         if categories:
@@ -239,11 +275,20 @@ class MemoryManager:
 
         categories_used = set(r.entry.category for r in unique_results)
 
-        return MemoryRetrievalResult(
+        result = MemoryRetrievalResult(
             memories=unique_results,
             enhanced_context=enhanced_context,
             categories_used=categories_used,
         )
+
+        # 缓存结果
+        if len(self._retrieval_cache) >= self._cache_max_size:
+            # 删除最旧的缓存
+            oldest_key = next(iter(self._retrieval_cache))
+            del self._retrieval_cache[oldest_key]
+        self._retrieval_cache[cache_key] = result
+
+        return result
 
     def add_memory(
         self,

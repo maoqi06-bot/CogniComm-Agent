@@ -134,6 +134,19 @@ class SearchMemoryTool(Tool):
                 include_decay=True,
             )
 
+            # 过滤低价值操作记忆
+            if hasattr(self.memory_manager, '_is_low_value_operational_memory'):
+                filtered_results = []
+                seen_ids = set()
+                for result in results:
+                    if result.entry.id in seen_ids:
+                        continue
+                    if self.memory_manager._is_low_value_operational_memory(result.entry):
+                        continue
+                    seen_ids.add(result.entry.id)
+                    filtered_results.append(result)
+                results = filtered_results
+
             if not results:
                 return f"未找到与 '{query}' 相关的记忆"
 

@@ -538,23 +538,26 @@ resource_manager: Optional[ResourceManager] = None,  # 资源管理器
         """
         从对话历史中提取并存储重要记忆。
 
-        Args:
-            task: 当前任务描述
-            success: 任务是否成功完成
+        使用后台线程执行，不阻塞主流程。
         """
         if not hasattr(self, 'memory_manager') or not self.memory_manager:
             return
 
-        try:
-            # 从对话历史中提取记忆
-            extracted = self.memory_manager.extract_and_store(
-                conversation_history=self.conversation_history,
-                current_task=task,
-            )
-            if extracted:
-                self.logger.info(f"Extracted {len(extracted)} memories from conversation", extra={"memory_count": len(extracted)})
-        except Exception as e:
-            self.logger.warning(f"Memory extraction failed: {e}", exc_info=True)
+        # 在后台线程执行记忆提取，避免阻塞主流程
+        def _background_extract():
+            try:
+                extracted = self.memory_manager.extract_and_store(
+                    conversation_history=self.conversation_history,
+                    current_task=task,
+                )
+                if extracted:
+                    self.logger.info(f"[Background] Extracted {len(extracted)} memories from conversation", extra={"memory_count": len(extracted)})
+            except Exception as e:
+                self.logger.warning(f"[Background] Memory extraction failed: {e}", exc_info=True)
+
+        import threading
+        thread = threading.Thread(target=_background_extract, daemon=True)
+        thread.start()
 
     def _apply_skills_for_task(self, task: str) -> None:
         """根据任务自动选择并激活相关技能。"""
