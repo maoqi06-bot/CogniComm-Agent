@@ -239,8 +239,8 @@ class AgentLogger:
     def info(self, message: str, **kwargs):
         self._logger.info(message, extra=kwargs)
 
-    def warning(self, message: str, **kwargs):
-        self._logger.warning(message, extra=kwargs)
+    def warning(self, message: str, exc_info: bool = False, **kwargs):
+        self._logger.warning(message, exc_info=exc_info, extra=kwargs)
 
     def error(self, message: str, exc_info: bool = False, **kwargs):
         self._logger.error(message, exc_info=exc_info, extra=kwargs)
