@@ -705,13 +705,38 @@ resource_manager: Optional[ResourceManager] = None,  # 资源管理器
                 candidate = "\n".join(lines[1:-1]).strip()
         try:
             parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            start = candidate.find("{")
-            end = candidate.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                raise ValueError("响应不是有效的 JSON。")
-            snippet = candidate[start : end + 1]
-            parsed = json.loads(snippet)
+        except json.JSONDecodeError as e:
+            # 处理 "Extra data" 错误：可能有多个 JSON 对象
+            if "Extra data" in str(e):
+                # 找到第一个完整的 JSON 对象
+                start = candidate.find('{"')
+                if start == -1:
+                    start = candidate.find('{')
+                depth = 0
+                end = start
+                for i, c in enumerate(candidate[start:], start):
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                if start != -1 and end > start:
+                    snippet = candidate[start:end]
+                    try:
+                        parsed = json.loads(snippet)
+                    except json.JSONDecodeError:
+                        raise ValueError(f"响应包含多个 JSON 对象，无法解析: {e}")
+                else:
+                    raise ValueError(f"响应不是有效的 JSON: {e}")
+            else:
+                start = candidate.find("{")
+                end = candidate.rfind("}")
+                if start == -1 or end == -1 or end <= start:
+                    raise ValueError(f"响应不是有效的 JSON: {e}")
+                snippet = candidate[start : end + 1]
+                parsed = json.loads(snippet)
         if not isinstance(parsed, dict):
             raise ValueError("智能体响应的 JSON 必须是对象。")
         # Compatibility for older prompts that asked models to return
