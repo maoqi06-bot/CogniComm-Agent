@@ -161,7 +161,7 @@ def apply_runtime_provider_env(config: Config) -> None:
             os.environ["OPENAI_BASE_URL"] = config.base_url
         os.environ.setdefault("OPENAI_API_STYLE", "auto")
     os.environ.setdefault("EMBEDDING_PROVIDER", "openai")
-    os.environ.setdefault("EMBEDDING_MODEL", "text-embedding-ada-002")
+    os.environ.setdefault("EMBEDDING_MODEL", "text-embedding-3-small")
     if os.getenv("OPENAI_API_KEY") and not os.getenv("EMBEDDING_API_KEY"):
         os.environ["EMBEDDING_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
     if os.getenv("OPENAI_BASE_URL") and not os.getenv("EMBEDDING_BASE_URL"):

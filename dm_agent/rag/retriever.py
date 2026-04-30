@@ -1,5 +1,6 @@
 """高级检索器封装，提供混合检索（BM25 + Dense）、RRF 融合与跨编码器精排功能。"""
 
+import logging
 import os
 import sys
 import threading
@@ -11,6 +12,8 @@ from sentence_transformers import CrossEncoder
 
 from .vector_store import FAISSVectorStore
 from .models import SearchResult, DocumentChunk
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_print(message: str) -> None:
@@ -31,7 +34,7 @@ class CrossEncoderReranker:
     """
 
     def __init__(self, model_name: str = 'BAAI/bge-reranker-base'):
-        _safe_print(f"[INFO] Loading Reranker model: {model_name} ...")
+        logger.info(f"Loading Reranker model: {model_name} ...")
         self.model = CrossEncoder(model_name)
 
     def rerank(self, query: str, results: List[SearchResult], top_k: int = 3) -> List[SearchResult]:
@@ -185,7 +188,7 @@ class HybridRetriever(Retriever):
         if not hasattr(self.vector_store, 'id_to_chunk') or not self.vector_store.id_to_chunk:
             return
 
-        _safe_print("[INFO] Building BM25 sparse retrieval index...")
+        logger.info("Building BM25 sparse retrieval index...")
         self.chunk_ids = list(self.vector_store.id_to_chunk.keys())
         # 简单分词，对于中英文混合场景可接入 jieba，此处采用基础按空格拆分
         tokenized_corpus = [
@@ -193,7 +196,7 @@ class HybridRetriever(Retriever):
             for cid in self.chunk_ids
         ]
         self.bm25 = BM25Okapi(tokenized_corpus)
-        _safe_print("[OK] BM25 index built.")
+        logger.debug("BM25 index built.")
 
     def _sparse_search(self, query: str, k: int) -> List[SearchResult]:
         """执行 BM25 稀疏检索。"""

@@ -101,16 +101,14 @@ class MCPClient:
         if not self.process or not self.process.stdout:
             return
         while self._running:
-            line = self.process.stdout.readline()
+            try:
+                line = self.process.stdout.readline()
+            except UnicodeDecodeError:
+                continue
             if not line: break
-            # 过滤非 JSON 行（防止 npx 的警告信息干扰）
             clean_line = line.strip()
             if clean_line.startswith('{'):
                 self._stdout_queue.put(clean_line)
-            else:
-                # 可以在这里打印非协议日志以便调试
-                # print(f"DEBUG [{self.name}]: {clean_line}")
-                pass
 
     def _send_message(self, method: str, params: Optional[Dict[str, Any]] = None, is_notification: bool = False) -> \
     Optional[Dict[str, Any]]:

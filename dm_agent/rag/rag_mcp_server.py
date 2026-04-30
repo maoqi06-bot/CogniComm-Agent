@@ -375,9 +375,8 @@ async def handle_call_tool(
     elif name == "search":
         skill_id = arguments.get("skill_id")
         query = arguments.get("query", "").strip()
-        _safe_print(f"[MCP RAG] search called with arguments = {arguments}")
         trace_id = arguments.get("trace_id")
-        _safe_print(f"[MCP RAG] trace_id = {trace_id}")
+        logger.debug(f"search called: skill_id={skill_id}, trace_id={trace_id}")
         if not skill_id or not query:
             return [types.TextContent(type="text", text="错误：缺少 skill_id 或 query 参数")]
 

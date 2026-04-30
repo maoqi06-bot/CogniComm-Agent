@@ -122,7 +122,7 @@ def resolve_embedding_provider(default: str = "openai") -> str:
     return (os.getenv("EMBEDDING_PROVIDER") or default).strip().lower()
 
 
-def resolve_embedding_model(default: str = "text-embedding-ada-002") -> str:
+def resolve_embedding_model(default: str = "text-embedding-3-small") -> str:
     return (
         os.getenv("EMBEDDING_MODEL")
         or default
