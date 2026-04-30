@@ -185,7 +185,7 @@ class HybridRetriever(Retriever):
         if not hasattr(self.vector_store, 'id_to_chunk') or not self.vector_store.id_to_chunk:
             return
 
-        print("🔨 正在构建 BM25 稀疏检索索引...")
+        _safe_print("[INFO] Building BM25 sparse retrieval index...")
         self.chunk_ids = list(self.vector_store.id_to_chunk.keys())
         # 简单分词，对于中英文混合场景可接入 jieba，此处采用基础按空格拆分
         tokenized_corpus = [
@@ -193,7 +193,7 @@ class HybridRetriever(Retriever):
             for cid in self.chunk_ids
         ]
         self.bm25 = BM25Okapi(tokenized_corpus)
-        print("✅ BM25 索引构建完成。")
+        _safe_print("[OK] BM25 index built.")
 
     def _sparse_search(self, query: str, k: int) -> List[SearchResult]:
         """执行 BM25 稀疏检索。"""
