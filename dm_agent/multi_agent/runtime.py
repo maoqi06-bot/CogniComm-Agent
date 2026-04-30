@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import time
 import uuid
 import asyncio
@@ -453,6 +454,57 @@ class CodeAgent(BaseAgent):
         )
         self.logger.info(f"ReactAgent initialized with {len(tools_to_register)} tools")
 
+    def _normalize_docker_requirements(self, raw_requirements: Any) -> List[str]:
+        """Normalize optional Docker Python package requirements."""
+        if raw_requirements is None:
+            return []
+        if isinstance(raw_requirements, str):
+            return [item.strip() for item in raw_requirements.splitlines() if item.strip()]
+        if isinstance(raw_requirements, list):
+            return [str(item).strip() for item in raw_requirements if str(item).strip()]
+        return []
+
+    def _infer_python_requirements(self, code: str, explicit_requirements: List[str]) -> List[str]:
+        """Infer common scientific Python dependencies used by generated task scripts."""
+        requirements = list(dict.fromkeys(explicit_requirements))
+        text = str(code or "")
+        import_to_package = {
+            "numpy": "numpy",
+            "pandas": "pandas",
+            "matplotlib": "matplotlib",
+            "scipy": "scipy",
+        }
+        for module_name, package_name in import_to_package.items():
+            patterns = (f"import {module_name}", f"from {module_name} ")
+            if any(pattern in text for pattern in patterns) and package_name not in requirements:
+                requirements.append(package_name)
+        return requirements
+
+    def _infer_shell_requirements(self, command: str, explicit_requirements: List[str]) -> List[str]:
+        """Infer package requirements for simple `python path.py` shell commands."""
+        requirements = list(dict.fromkeys(explicit_requirements))
+        try:
+            parts = shlex.split(command, posix=False)
+        except ValueError:
+            parts = command.split()
+
+        for index, part in enumerate(parts[:-1]):
+            executable = part.strip("\"'").replace("\\", "/").split("/")[-1].lower()
+            if executable not in {"python", "python3"}:
+                continue
+            script = parts[index + 1].strip("\"'")
+            if not script.endswith(".py"):
+                continue
+            script_path = os.path.join(os.getcwd(), script)
+            if not os.path.exists(script_path):
+                continue
+            try:
+                with open(script_path, "r", encoding="utf-8") as f:
+                    requirements = self._infer_python_requirements(f.read(), requirements)
+            except Exception:
+                continue
+        return requirements
+
     def _build_multi_agent_code_prompt(self, tools: List[Any]) -> str:
         return build_multi_agent_code_prompt(tools)
         tool_lines = "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
@@ -493,15 +545,24 @@ class CodeAgent(BaseAgent):
             """在 Docker 容器中执行 Python 代码"""
             code = arguments.get("code")
             path_value = arguments.get("path")
+            requirements = self._normalize_docker_requirements(arguments.get("requirements"))
 
             if isinstance(code, str) and code.strip():
-                result = docker_runner.execute(code=code, language="python")
+                result = docker_runner.execute(
+                    code=code,
+                    language="python",
+                    requirements=self._infer_python_requirements(code, requirements),
+                )
             elif isinstance(path_value, str) and path_value.strip():
                 # 读取文件内容
                 try:
                     with open(path_value, "r", encoding="utf-8") as f:
                         code = f.read()
-                    result = docker_runner.execute(code=code, language="python")
+                    result = docker_runner.execute(
+                        code=code,
+                        language="python",
+                        requirements=self._infer_python_requirements(code, requirements),
+                    )
                 except FileNotFoundError:
                     return f"文件未找到: {path_value}"
                 except Exception as e:
@@ -526,7 +587,9 @@ class CodeAgent(BaseAgent):
             command = arguments.get("command")
             if not isinstance(command, str) or not command.strip():
                 return "run_shell 工具需要 'command' 参数。"
-            result = docker_runner.execute(code=command, language="shell")
+            requirements = self._normalize_docker_requirements(arguments.get("requirements"))
+            requirements = self._infer_shell_requirements(command, requirements)
+            result = docker_runner.execute(code=command, language="shell", requirements=requirements)
             if result.get("success"):
                 output = result.get("stdout", "")
                 stderr = result.get("stderr", "")
@@ -547,10 +610,12 @@ class CodeAgent(BaseAgent):
                 test_path = "."
             if framework == "unittest":
                 command = f"python -m unittest discover -s {test_path}"
+                requirements = []
             else:
                 verbose = " -v" if arguments.get("verbose", False) else ""
                 command = f"python -m pytest{verbose} {test_path}"
-            return docker_run_shell({"command": command})
+                requirements = ["pytest"]
+            return docker_run_shell({"command": command, "requirements": requirements})
 
         from ..tools.base import Tool
         new_tools = []
@@ -559,13 +624,21 @@ class CodeAgent(BaseAgent):
                 # 替换为 Docker 版本
                 new_tools.append(Tool(
                     name="run_python",
-                    description="[Docker] Execute Python code in isolated container. " + tool.description,
+                    description=(
+                        "[Docker] Execute Python code in isolated container. "
+                        "Optional action_input.requirements may list pip packages; common scientific imports are auto-detected. "
+                        + tool.description
+                    ),
                     runner=docker_run_python,
                 ))
             elif tool.name == "run_shell":
                 new_tools.append(Tool(
                     name="run_shell",
-                    description="[Docker] Execute a shell command in isolated container under /workspace. " + tool.description,
+                    description=(
+                        "[Docker] Execute a shell command in isolated container under /workspace. "
+                        "Optional action_input.requirements may list pip packages. "
+                        + tool.description
+                    ),
                     runner=docker_run_shell,
                 ))
             elif tool.name == "run_tests":
@@ -806,6 +879,7 @@ class DockerRunner:
                     "-v", f"{self.workspace_dir}:/workspace",
                     "-w", "/workspace",
                     "-e", "PYTHONPATH=/workspace",
+                    "-e", "PYTHONIOENCODING=utf-8",
                     self.image,
                 ]
 
@@ -826,19 +900,28 @@ class DockerRunner:
                     "-v", f"{tmpdir}:/code",
                     "-v", f"{self.workspace_dir}:/workspace",
                     "-w", "/workspace",
+                    "-e", "PYTHONIOENCODING=utf-8",
                     "node:20-slim",
                     "node", "/code/main.js",
                 ]
             elif language == "shell":
+                shell_code = code
+                if requirements:
+                    req_file = os.path.join(tmpdir, "requirements.txt")
+                    with open(req_file, "w", encoding="utf-8") as f:
+                        f.write("\n".join(requirements))
+                    shell_code = f"pip install -q -r /code/requirements.txt && {code}"
                 docker_cmd = [
                     "docker", "run", "--rm",
                     "--memory", self.memory_limit,
                     "--cpus", self.cpu_limit,
+                    "-v", f"{tmpdir}:/code",
                     "-v", f"{self.workspace_dir}:/workspace",
                     "-w", "/workspace",
                     "-e", "PYTHONPATH=/workspace",
+                    "-e", "PYTHONIOENCODING=utf-8",
                     self.image,
-                    "bash", "-lc", code,
+                    "bash", "-lc", shell_code,
                 ]
             else:
                 return {
@@ -853,6 +936,8 @@ class DockerRunner:
                     docker_cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self.timeout,
                 )
 

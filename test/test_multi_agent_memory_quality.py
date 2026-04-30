@@ -33,6 +33,7 @@ from dm_agent.memory.long_term_memory import (
     MemoryCategory,
     MemoryPriority,
 )
+from dm_agent.multi_agent.runtime import CodeAgent
 from dm_agent.multi_agent.memory import MultiAgentMemoryConfig, MultiAgentMemoryHub
 from dm_agent.rag.models import DocumentChunk
 
@@ -80,6 +81,33 @@ class TestMultiAgentMemoryQuality(unittest.TestCase):
             )
 
             memory_manager.add_memory.assert_not_called()
+
+    def test_code_agent_infers_common_python_requirements(self):
+        agent = CodeAgent.__new__(CodeAgent)
+
+        requirements = agent._infer_python_requirements(
+            "import numpy as np\nfrom matplotlib import pyplot as plt\n",
+            [],
+        )
+
+        self.assertIn("numpy", requirements)
+        self.assertIn("matplotlib", requirements)
+
+    def test_code_agent_infers_shell_python_script_requirements(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            script_path = Path(tmp) / "demo.py"
+            script_path.write_text("import numpy as np\n", encoding="utf-8")
+            old_cwd = Path.cwd()
+            try:
+                import os
+
+                os.chdir(tmp)
+                agent = CodeAgent.__new__(CodeAgent)
+                requirements = agent._infer_shell_requirements("python demo.py", [])
+            finally:
+                os.chdir(old_cwd)
+
+        self.assertIn("numpy", requirements)
 
 
 class TestLongTermMemoryRecoveryQuality(unittest.TestCase):
