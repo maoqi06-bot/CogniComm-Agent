@@ -235,7 +235,7 @@ class MemoryManager:
                 all_results.extend(results)
         else:
             # 全品类检索
-            # 1. 先检索所有相关记忆
+            # 1. 先检索所有相关记忆（提高阈值）
             results = self.memory_store.search(
                 query=current_task,
                 limit=limit * 2,
@@ -243,12 +243,12 @@ class MemoryManager:
             )
             all_results.extend(results)
 
-            # 2. 补充检索用户偏好（总是很重要）
+            # 2. 补充检索用户偏好（总是很重要）- 限制数量
             preference_results = self.memory_store.search(
                 query=current_task,
                 category=MemoryCategory.USER_PREFERENCE,
-                limit=3,
-                include_decay=False,  # 用户偏好不考虑衰减
+                limit=1,  # 减少为1条
+                include_decay=False,
             )
             all_results.extend(preference_results)
 
@@ -557,11 +557,16 @@ class MemoryManager:
         if not results:
             return ""
 
+        # 只包含向量相似度 > 0.65 的记忆，避免低相关记忆污染上下文
+        high_quality_results = [r for r in results if r.score > 0.65]
+        if not high_quality_results:
+            return ""  # 没有足够相关的记忆，返回空
+
         lines = ["\n\n=== 相关历史记忆 ==="]
 
         # 按类别分组
         by_category: Dict[MemoryCategory, List[MemorySearchResult]] = {}
-        for result in results:
+        for result in high_quality_results:
             cat = result.entry.category
             if cat not in by_category:
                 by_category[cat] = []

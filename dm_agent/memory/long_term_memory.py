@@ -689,7 +689,11 @@ class LongTermMemoryStore:
                     continue
 
                 # 混合评分：向量相似度 + 重要性
-                final_score = result.score * 0.6 + effective_score * 0.4
+                # 严格要求向量相似度 > 0.55，确保只返回真正相关的记忆
+                if result.score < 0.55:
+                    continue
+                # 向量相似度为主，重要性为辅
+                final_score = result.score * 0.9 + effective_score * 0.1
 
                 results.append(MemorySearchResult(
                     entry=entry,
