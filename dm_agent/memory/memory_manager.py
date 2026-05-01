@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Optional, Set, Callable
 from dataclasses import dataclass, field
 
 from ..clients.base_client import BaseLLMClient
+from ..prompts.memory_prompts import (
+    build_memory_extraction_prompt,
+    build_memory_resolution_prompt,
+)
 from .long_term_memory import (
     LongTermMemoryStore,
     MemoryEntry,
@@ -125,6 +129,10 @@ class MemoryManager:
         self.retrieval_top_k = self.config.get("retrieval_top_k", 5)
         self.consolidation_interval = self.config.get("consolidation_interval", 24)  # hours
         self.cleanup_interval = self.config.get("cleanup_interval", 168)  # hours (1 week)
+        self.smart_memory_update_enabled = self.config.get("smart_memory_update_enabled", True)
+        self.memory_resolution_top_k = self.config.get("memory_resolution_top_k", 5)
+        self.memory_resolution_min_similarity = self.config.get("memory_resolution_min_similarity", 0.72)
+        self.memory_resolution_temperature = self.config.get("memory_resolution_temperature", 0.0)
 
         # 状态跟踪
         self._last_consolidation = time.time()
@@ -317,7 +325,7 @@ class MemoryManager:
         Returns:
             MemoryEntry: 创建的记忆条目
         """
-        entry = self.memory_store.add(
+        entry = self.add_or_update_memory(
             content=content,
             category=category,
             priority=priority,
@@ -327,8 +335,107 @@ class MemoryManager:
             source=source,
             is_pinned=is_pinned,
         )
-        self._session_memory_ids.append(entry.id)
         return entry
+
+    def add_or_update_memory(
+        self,
+        content: str,
+        category: MemoryCategory,
+        priority: MemoryPriority = MemoryPriority.NORMAL,
+        importance_score: float = 0.5,
+        tags: Optional[Set[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        source: str = "manual",
+        is_pinned: bool = False,
+        decay_factor: float = 1.0,
+    ) -> MemoryEntry:
+        """Add a memory, or intelligently update/replace a similar existing one."""
+        tags = set(tags or set())
+        metadata = dict(metadata or {})
+        candidate_entry = MemoryEntry(
+            id="",
+            content=content,
+            category=category,
+            priority=priority,
+            importance_score=importance_score,
+            tags=tags,
+            metadata=metadata,
+            source=source,
+            is_pinned=is_pinned,
+            decay_factor=decay_factor,
+        )
+        if self._is_low_value_operational_memory(candidate_entry):
+            return candidate_entry
+
+        if not self.smart_memory_update_enabled:
+            return self._create_memory(candidate_entry)
+
+        candidates = self._find_similar_memories(candidate_entry)
+        exact_duplicate = self._find_exact_duplicate(candidate_entry, candidates)
+        if exact_duplicate:
+            updated = self.memory_store.update(exact_duplicate.id, increment_access=True)
+            return updated or exact_duplicate
+
+        if not candidates:
+            return self._create_memory(candidate_entry)
+
+        decision = self.resolve_memory_conflict(candidate_entry, candidates)
+        action = str(decision.get("action") or "create_new").strip().lower()
+
+        if action == "ignore":
+            target = self._get_decision_target(decision, candidates)
+            if target:
+                updated = self.memory_store.update(target.id, increment_access=True)
+                return updated or target
+            return candidate_entry
+
+        if action in {"update_existing", "replace_existing"}:
+            target = self._get_decision_target(decision, candidates)
+            if target:
+                return self._apply_memory_resolution(
+                    target=target,
+                    incoming=candidate_entry,
+                    decision=decision,
+                    action=action,
+                )
+
+        return self._create_memory(candidate_entry)
+
+    def resolve_memory_conflict(
+        self,
+        new_memory: MemoryEntry,
+        candidates: List[MemorySearchResult],
+    ) -> Dict[str, Any]:
+        """Ask the LLM how to handle a new memory relative to similar existing memories."""
+        if not self.llm_client:
+            return {"action": "create_new", "reason": "No LLM client available."}
+
+        prompt = build_memory_resolution_prompt(
+            new_memory=self._serialize_memory_for_prompt(new_memory),
+            candidates=[
+                {
+                    **self._serialize_memory_for_prompt(result.entry),
+                    "similarity_score": result.score,
+                }
+                for result in candidates
+            ],
+        )
+        try:
+            response = self.llm_client.respond(
+                [{"role": "user", "content": prompt}],
+                temperature=self.memory_resolution_temperature,
+            )
+            json_str = self._extract_json_from_response(response)
+            if not json_str:
+                return {"action": "create_new", "reason": "LLM returned no parseable JSON."}
+            data = json.loads(json_str)
+            if not isinstance(data, dict):
+                return {"action": "create_new", "reason": "LLM response was not a JSON object."}
+            if data.get("action") not in {"create_new", "update_existing", "replace_existing", "ignore"}:
+                data["action"] = "create_new"
+            return data
+        except Exception as e:
+            return {"action": "create_new", "reason": f"Memory resolution failed: {e}"}
 
     def extract_and_store(
         self,
@@ -375,7 +482,7 @@ class MemoryManager:
         # 4. 存储唯一记忆
         stored = []
         for entry in unique_extracted:
-            stored_entry = self.memory_store.add(
+            stored_entry = self.add_or_update_memory(
                 content=entry.content,
                 category=entry.category,
                 priority=entry.priority,
@@ -387,7 +494,6 @@ class MemoryManager:
                 decay_factor=entry.decay_factor,
             )
             stored.append(stored_entry)
-            self._session_memory_ids.append(stored_entry.id)
 
         return stored
 
@@ -508,10 +614,171 @@ class MemoryManager:
                 "retrieval_top_k": self.retrieval_top_k,
                 "consolidation_interval_hours": self.consolidation_interval,
                 "cleanup_interval_hours": self.cleanup_interval,
+                "smart_memory_update_enabled": self.smart_memory_update_enabled,
+                "memory_resolution_top_k": self.memory_resolution_top_k,
+                "memory_resolution_min_similarity": self.memory_resolution_min_similarity,
             },
         }
 
     # ==================== Private Methods ====================
+
+    def _create_memory(self, entry: MemoryEntry) -> MemoryEntry:
+        stored = self.memory_store.add(
+            content=entry.content,
+            category=entry.category,
+            priority=entry.priority,
+            importance_score=entry.importance_score,
+            tags=entry.tags,
+            metadata=entry.metadata,
+            source=entry.source,
+            is_pinned=entry.is_pinned,
+            decay_factor=entry.decay_factor,
+        )
+        self._remember_session_id(stored.id)
+        self._retrieval_cache.clear()
+        return stored
+
+    def _remember_session_id(self, memory_id: str) -> None:
+        if memory_id and memory_id not in self._session_memory_ids:
+            self._session_memory_ids.append(memory_id)
+
+    def _find_similar_memories(self, entry: MemoryEntry) -> List[MemorySearchResult]:
+        try:
+            results = self.memory_store.search(
+                query=entry.content,
+                category=entry.category,
+                limit=self.memory_resolution_top_k,
+                include_decay=False,
+            )
+        except Exception:
+            return []
+        filtered: List[MemorySearchResult] = []
+        for result in results:
+            if self._is_low_value_operational_memory(result.entry):
+                continue
+            if result.score >= self.memory_resolution_min_similarity:
+                filtered.append(result)
+        return filtered
+
+    def _find_exact_duplicate(
+        self,
+        entry: MemoryEntry,
+        candidates: List[MemorySearchResult],
+    ) -> Optional[MemoryEntry]:
+        normalized = self._normalize_memory_text(entry.content)
+        for result in candidates:
+            if (
+                result.entry.category == entry.category
+                and self._normalize_memory_text(result.entry.content) == normalized
+            ):
+                return result.entry
+        return None
+
+    def _normalize_memory_text(self, value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+    def _get_decision_target(
+        self,
+        decision: Dict[str, Any],
+        candidates: List[MemorySearchResult],
+    ) -> Optional[MemoryEntry]:
+        target_id = str(decision.get("target_memory_id") or "").strip()
+        if target_id:
+            for result in candidates:
+                if result.entry.id == target_id:
+                    return result.entry
+            try:
+                return self.memory_store.get(target_id, increment_access=False)
+            except TypeError:
+                return self.memory_store.get(target_id)
+            except Exception:
+                return None
+        return candidates[0].entry if candidates else None
+
+    def _apply_memory_resolution(
+        self,
+        target: MemoryEntry,
+        incoming: MemoryEntry,
+        decision: Dict[str, Any],
+        action: str,
+    ) -> MemoryEntry:
+        reason = str(decision.get("reason") or "").strip()
+        updated_content = str(decision.get("updated_content") or "").strip()
+        if not updated_content:
+            updated_content = incoming.content if action == "replace_existing" else target.content
+
+        final_category = self._parse_category_value(decision.get("category"), target.category)
+        final_importance = self._safe_score(
+            decision.get("importance_score"),
+            max(target.importance_score, incoming.importance_score),
+        )
+        final_tags = set(target.tags or set()).union(incoming.tags or set())
+        if isinstance(decision.get("tags"), list):
+            final_tags.update(str(tag) for tag in decision["tags"] if str(tag).strip())
+
+        history_item = {
+            "action": action,
+            "previous_content": target.content,
+            "incoming_content": incoming.content,
+            "incoming_source": incoming.source,
+            "reason": reason,
+            "resolved_at": time.time(),
+        }
+        metadata = dict(target.metadata or {})
+        history = list(metadata.get("memory_update_history") or [])
+        history.append(history_item)
+        metadata["memory_update_history"] = history
+        metadata["last_merge_reason"] = reason
+        metadata["resolved_from_memory_ids"] = sorted(
+            set(metadata.get("resolved_from_memory_ids") or []) | {incoming.id}
+        )
+        if action == "replace_existing":
+            metadata["superseded_by"] = target.id
+
+        updated = self.memory_store.update(
+            target.id,
+            content=updated_content,
+            category=final_category,
+            priority=max(target.priority, incoming.priority, key=lambda item: item.value),
+            importance_score=final_importance,
+            tags=final_tags,
+            metadata=metadata,
+            is_pinned=bool(decision.get("is_pinned", target.is_pinned or incoming.is_pinned)),
+            decay_factor=min(target.decay_factor, incoming.decay_factor),
+        )
+        resolved = updated or target
+        self._remember_session_id(resolved.id)
+        self._retrieval_cache.clear()
+        return resolved
+
+    def _serialize_memory_for_prompt(self, entry: MemoryEntry) -> Dict[str, Any]:
+        return {
+            "id": entry.id,
+            "content": entry.content,
+            "category": entry.category.value,
+            "priority": entry.priority.value,
+            "importance_score": entry.importance_score,
+            "tags": sorted(entry.tags or set()),
+            "metadata": entry.metadata or {},
+            "source": entry.source,
+            "is_pinned": entry.is_pinned,
+            "created_at": entry.created_at,
+            "updated_at": entry.updated_at,
+        }
+
+    def _parse_category_value(self, value: Any, default: MemoryCategory) -> MemoryCategory:
+        if not value:
+            return default
+        try:
+            return MemoryCategory(str(value))
+        except Exception:
+            return default
+
+    def _safe_score(self, value: Any, default: float) -> float:
+        try:
+            return max(0.0, min(1.0, float(value)))
+        except Exception:
+            return max(0.0, min(1.0, float(default)))
 
     def _is_low_value_operational_memory(self, entry: MemoryEntry) -> bool:
         """Return True for transient tool/runtime failures that should not become long-term memory."""
@@ -697,29 +964,7 @@ class MemoryManager:
 
         # 构建提取提示
         history_text = self._format_conversation_for_extraction(conversation_history)
-
-        extraction_prompt = f"""你是一个记忆提取专家。请从以下对话历史中提取值得长期保存的重要信息。
-
-对话历史：
-{history_text}
-
-请提取以下类型的记忆（JSON格式的列表）：
-1. user_preference: 用户的偏好和习惯（如偏好的工具、编码风格等）
-2. project_context: 项目相关信息（如项目名称、技术栈等）
-3. important_fact: 重要的技术事实或约束条件
-4. skill_knowledge: 有价值的技能知识或经验
-
-每条记忆格式：
-{{
-    "content": "记忆内容（简洁，1-2句话）",
-    "category": "记忆类别",
-    "importance_score": 0.0-1.0的重要性评分,
-    "tags": ["标签1", "标签2"],
-    "reason": "为什么这条记忆重要"
-}}
-
-只返回JSON列表，不要其他内容。如果某类没有值得保存的记忆，该类可以为空列表。
-"""
+        extraction_prompt = build_memory_extraction_prompt(history_text, current_task)
 
         try:
             messages = [{"role": "user", "content": extraction_prompt}]

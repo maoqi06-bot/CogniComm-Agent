@@ -276,7 +276,7 @@ class LongTermMemoryStore:
             return 0
 
         recovered = 0
-        for chunk_id, chunk in self.vector_store.id_to_chunk.items():
+        for chunk_id, chunk in getattr(self.vector_store, "id_to_chunk", {}).items():
             metadata = dict(chunk.metadata or {})
             memory_id = metadata.get("memory_id") or chunk_id
             if memory_id in self._memory_index:
@@ -594,8 +594,7 @@ class LongTermMemoryStore:
             del self._memory_index[memory_id]
 
             # 从向量存储中删除
-            if memory_id in self.vector_store.id_to_chunk:
-                del self.vector_store.id_to_chunk[memory_id]
+            self._rebuild_all_vectors()
 
             self._save()
             return True
@@ -907,6 +906,9 @@ class LongTermMemoryStore:
         if memory_id not in self._memory_index:
             return
 
+        self._rebuild_all_vectors()
+        return
+
         entry = self._memory_index[memory_id]
 
         # 简单策略：直接从内容重建
@@ -925,6 +927,30 @@ class LongTermMemoryStore:
 
         # 在 id_to_chunk 中更新
         self.vector_store.id_to_chunk[memory_id] = chunk
+
+    def _rebuild_all_vectors(self):
+        """Rebuild the vector index from the authoritative memory index."""
+        index_type = getattr(self.vector_store, "index_type", "Flat")
+        metric = getattr(self.vector_store, "metric", "cosine")
+        self.vector_store = FAISSVectorStore(
+            embeddings=self.embeddings,
+            index_path=str(self.index_path),
+            dimension=self.dimension,
+            index_type=index_type,
+            metric=metric,
+        )
+        chunks = [
+            DocumentChunk(
+                id=entry.id,
+                document_id=entry.id,
+                content=entry.content,
+                chunk_index=0,
+                metadata=self._build_vector_metadata(entry),
+            )
+            for entry in self._memory_index.values()
+        ]
+        if chunks:
+            self.vector_store.add_chunks(chunks)
 
     def export_memories(self, filepath: Optional[str] = None) -> str:
         """

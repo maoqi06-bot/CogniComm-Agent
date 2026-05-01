@@ -304,6 +304,208 @@ class TestMemoryManagerQualityFilters(unittest.TestCase):
         store.add.assert_not_called()
 
 
+class FakeMemoryStore:
+    def __init__(self, search_results=None):
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        self.search_results = search_results or []
+        self.added = []
+        self.updated = []
+        self._memory_index = {result.entry.id: result.entry for result in self.search_results}
+        self._category_index = {cat: set() for cat in MemoryCategory}
+
+    def search(self, **kwargs):
+        return self.search_results
+
+    def add(self, **kwargs):
+        from dm_agent.memory.long_term_memory import MemoryEntry
+
+        entry = MemoryEntry(id=f"new-{len(self.added) + 1}", **kwargs)
+        self.added.append(entry)
+        self._memory_index[entry.id] = entry
+        return entry
+
+    def update(self, memory_id, **kwargs):
+        entry = self._memory_index.get(memory_id)
+        if not entry:
+            return None
+        self.updated.append((memory_id, kwargs))
+        if kwargs.get("increment_access"):
+            entry.access_count += 1
+        for key, value in kwargs.items():
+            if key == "increment_access":
+                continue
+            if value is not None:
+                setattr(entry, key, value)
+        return entry
+
+    def get(self, memory_id, increment_access=True):
+        return self._memory_index.get(memory_id)
+
+    def get_statistics(self):
+        return {}
+
+
+class FakeLLM:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def respond(self, messages, **kwargs):
+        self.calls.append((messages, kwargs))
+        return self.response
+
+
+class TestSmartMemoryUpdates(unittest.TestCase):
+    def _result(self, entry, score=0.95):
+        from dm_agent.memory.long_term_memory import MemorySearchResult
+
+        return MemorySearchResult(entry=entry, score=score)
+
+    def _entry(self, content, memory_id="old"):
+        from dm_agent.memory.long_term_memory import MemoryEntry, MemoryCategory, MemoryPriority
+
+        return MemoryEntry(
+            id=memory_id,
+            content=content,
+            category=MemoryCategory.USER_PREFERENCE,
+            priority=MemoryPriority.HIGH,
+            importance_score=0.7,
+            tags={"preference"},
+        )
+
+    def test_duplicate_memory_is_ignored_without_extra_add(self):
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        old = self._entry("User prefers pytest for tests.")
+        store = FakeMemoryStore([self._result(old)])
+        manager = MemoryManager(memory_store=store, llm_client=FakeLLM("{}"))
+
+        result = manager.add_memory("User prefers pytest for tests.", MemoryCategory.USER_PREFERENCE)
+
+        self.assertEqual(result.id, old.id)
+        self.assertEqual(store.added, [])
+        self.assertEqual(old.access_count, 1)
+
+    def test_update_existing_merges_new_detail(self):
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        old = self._entry("User prefers pytest.")
+        store = FakeMemoryStore([self._result(old)])
+        llm = FakeLLM('{"action":"update_existing","target_memory_id":"old","updated_content":"User prefers pytest with focused unit tests.","tags":["pytest","unit"],"reason":"Adds useful detail."}')
+        manager = MemoryManager(memory_store=store, llm_client=llm)
+
+        result = manager.add_memory("User prefers focused unit tests in pytest.", MemoryCategory.USER_PREFERENCE)
+
+        self.assertEqual(result.id, old.id)
+        self.assertEqual(result.content, "User prefers pytest with focused unit tests.")
+        self.assertIn("memory_update_history", result.metadata)
+        self.assertEqual(store.added, [])
+
+    def test_replace_existing_when_new_preference_conflicts(self):
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        old = self._entry("User prefers unittest.")
+        store = FakeMemoryStore([self._result(old)])
+        llm = FakeLLM('{"action":"replace_existing","target_memory_id":"old","updated_content":"User prefers pytest.","reason":"Newest explicit preference wins."}')
+        manager = MemoryManager(memory_store=store, llm_client=llm)
+
+        result = manager.add_memory("User prefers pytest.", MemoryCategory.USER_PREFERENCE)
+
+        self.assertEqual(result.id, old.id)
+        self.assertEqual(result.content, "User prefers pytest.")
+        self.assertEqual(store.added, [])
+
+    def test_similar_but_independent_memory_is_created(self):
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        old = self._entry("User prefers pytest.")
+        store = FakeMemoryStore([self._result(old)])
+        llm = FakeLLM('{"action":"create_new","reason":"Different topic."}')
+        manager = MemoryManager(memory_store=store, llm_client=llm)
+
+        result = manager.add_memory("User prefers Ruff for linting.", MemoryCategory.USER_PREFERENCE)
+
+        self.assertNotEqual(result.id, old.id)
+        self.assertEqual(len(store.added), 1)
+
+    def test_invalid_llm_resolution_falls_back_to_create_new(self):
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        old = self._entry("User prefers pytest.")
+        store = FakeMemoryStore([self._result(old)])
+        manager = MemoryManager(memory_store=store, llm_client=FakeLLM("not json"))
+
+        result = manager.add_memory("User prefers Ruff for linting.", MemoryCategory.USER_PREFERENCE)
+
+        self.assertNotEqual(result.id, old.id)
+        self.assertEqual(len(store.added), 1)
+
+    def test_no_llm_exact_duplicate_does_not_create_new(self):
+        from dm_agent.memory.memory_manager import MemoryManager
+        from dm_agent.memory.long_term_memory import MemoryCategory
+
+        old = self._entry("User prefers pytest.")
+        store = FakeMemoryStore([self._result(old)])
+        manager = MemoryManager(memory_store=store, llm_client=None)
+
+        result = manager.add_memory("User prefers pytest.", MemoryCategory.USER_PREFERENCE)
+
+        self.assertEqual(result.id, old.id)
+        self.assertEqual(store.added, [])
+
+
+class TestVectorRebuildOnContentUpdate(unittest.TestCase):
+    def test_update_rebuilds_vector_chunks_with_new_content(self):
+        from unittest.mock import patch
+        from dm_agent.memory.long_term_memory import LongTermMemoryStore, MemoryCategory
+
+        class FakeEmbeddings:
+            dimension = 3
+
+            def embed(self, texts):
+                import numpy as np
+
+                return np.ones((len(texts), 3), dtype="float32")
+
+            def embed_query(self, text):
+                import numpy as np
+
+                return np.ones(3, dtype="float32")
+
+        class FakeVectorStore:
+            def __init__(self, **kwargs):
+                self.id_to_chunk = {}
+                self.position_to_id = []
+                self.index_type = kwargs.get("index_type", "Flat")
+                self.metric = kwargs.get("metric", "cosine")
+
+            def add_chunks(self, chunks, embeddings=None):
+                for chunk in chunks:
+                    self.id_to_chunk[chunk.id] = chunk
+                    self.position_to_id.append(chunk.id)
+
+            def save(self):
+                pass
+
+            def search(self, query, k=5):
+                return []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("dm_agent.memory.long_term_memory.FAISSVectorStore", FakeVectorStore):
+                store = LongTermMemoryStore(storage_path=tmpdir, embeddings=FakeEmbeddings())
+                entry = store.add("old vector content", category=MemoryCategory.PROJECT_CONTEXT)
+                store.update(entry.id, content="new vector content")
+
+                self.assertEqual(store.vector_store.id_to_chunk[entry.id].content, "new vector content")
+                self.assertEqual(store.vector_store.position_to_id, [entry.id])
+
+
 def run_tests():
     """运行所有测试。"""
     print("\n" + "=" * 60)
@@ -320,6 +522,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestLongTermMemoryStoreRequiresFaiss))
     suite.addTests(loader.loadTestsFromTestCase(TestMemoryManagerRequiresFaiss))
     suite.addTests(loader.loadTestsFromTestCase(TestMemoryManagerQualityFilters))
+    suite.addTests(loader.loadTestsFromTestCase(TestSmartMemoryUpdates))
+    suite.addTests(loader.loadTestsFromTestCase(TestVectorRebuildOnContentUpdate))
 
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

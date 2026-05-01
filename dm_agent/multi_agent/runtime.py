@@ -24,8 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from abc import ABC, abstractmethod
 
 from ..core.agent import ReactAgent, Step
-from ..skills.manager import SkillManager
-from ..skills.builtin.base_rag_skill import BaseRAGSkill
+from ..skills.manager import BaseRAGSkill, SkillManager
 from ..clients.base_client import BaseLLMClient
 from ..utils.logger import get_logger, AgentLogger
 from ..utils.security import ResourceManager, RateLimitConfig
@@ -415,8 +414,7 @@ class CodeAgent(BaseAgent):
 
         # 1. 单 Agent/兼容模式可从 skill_manager 注入 RAG 工具。
         # 多 Agent 模式下由独立 RAGAgent 完整负责 retrieve + synthesize，CodeAgent 不再挂载 RAG 工具。
-        if self._skill_manager and self._allow_rag_tools:
-            from ..skills.builtin.base_rag_skill import BaseRAGSkill
+        if self._skill_manager and self._allow_rag_tools and BaseRAGSkill is not None:
             rag_tools_count = 0
             for skill_name, skill in getattr(self._skill_manager, "skills", {}).items():
                 if isinstance(skill, BaseRAGSkill):
@@ -1522,7 +1520,8 @@ class OrchestratorAgent:
 
     def _register_rag_skills(self, skill_manager: SkillManager):
         """从 SkillManager 注册 RAG 技能"""
-        from ..skills.builtin.base_rag_skill import BaseRAGSkill
+        if BaseRAGSkill is None:
+            return
 
         allowed_skills = {
             str(item)

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 from ..clients.base_client import BaseLLMClient, LLMCallMetrics
 from ..tools.base import Tool
-from ..prompts import build_code_agent_prompt
+from ..prompts import build_code_agent_prompt, build_memory_guidance_prompt
 from ..memory.context_compressor import ContextCompressor
 from ..memory.memory_manager import MemoryManager
 from ..memory.memory_tools import create_memory_tools
@@ -179,19 +179,7 @@ resource_manager: Optional[ResourceManager] = None,  # 资源管理器
             for tool in memory_tools:
                 self.tools[tool.name] = tool
             # 在系统提示中添加记忆使用指导
-            memory_guidance = """
-
-=== 长期记忆使用指南 ===
-你可以使用以下工具管理长期记忆：
-- add_memory: 添加需要记住的重要信息
-- search_memory: 搜索相关记忆以获取上下文
-- update_memory: 更新现有记忆的重要性或内容
-- delete_memory: 删除过时或不准确的记忆
-- list_memories: 查看当前记忆库
-- get_memory_stats: 查看记忆系统统计
-
-当用户表达偏好、做出重要决策或遇到有价值的问题解决方案时，主动使用 add_memory 保存。
-"""
+            memory_guidance = build_memory_guidance_prompt()
             self.system_prompt += memory_guidance
 
         # 资源管理器

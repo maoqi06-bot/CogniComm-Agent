@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from .builtin.base_rag_skill import BaseRAGSkill
+try:
+    from .builtin.base_rag_skill import BaseRAGSkill
+except ImportError:
+    BaseRAGSkill = None
 from .base import BaseSkill, ConfigSkill
 from .selector import SkillSelector
 
@@ -80,8 +83,10 @@ class SkillManager:
                     continue
 
                 # 关键：根据 type 字段决定实例化哪个类
-                if config.get("type") == "rag":
+                if config.get("type") == "rag" and BaseRAGSkill is not None:
                     skill = BaseRAGSkill(config=config)
+                elif config.get("type") == "rag":
+                    continue
                 else:
                     skill = ConfigSkill(config)  # 原有的工具调用技能
 
@@ -134,7 +139,7 @@ class SkillManager:
         print(f"🔍 正在扫描 {total} 个技能的索引状态...")
         for name, skill in self.skills.items():
             # 如果是 BaseRAGSkill 或其子类
-            if isinstance(skill, BaseRAGSkill):
+            if BaseRAGSkill is not None and isinstance(skill, BaseRAGSkill):
                 # 检查目录是否存在
                 if not skill.builtin_dir.exists():
                     print(f"⚠️ 警告: {name} 的原始数据目录不存在: {skill.builtin_dir}")

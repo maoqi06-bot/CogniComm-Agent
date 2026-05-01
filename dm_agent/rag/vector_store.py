@@ -3,7 +3,10 @@
 import os
 import json
 import numpy as np
-import faiss
+try:
+    import faiss
+except ImportError:  # pragma: no cover - depends on optional runtime dependency
+    faiss = None
 from typing import List, Optional, Dict, Any, Union
 
 from .models import DocumentChunk, SearchResult
@@ -50,6 +53,8 @@ class FAISSVectorStore:
 
     def _create_index(self):
         """根据配置创建 FAISS 索引实例。"""
+        if faiss is None:
+            raise ImportError("faiss is required for FAISSVectorStore. Install faiss-cpu to use vector search.")
         if self.index_type == "Flat":
             if self.metric == "cosine":
                 self.index = faiss.IndexFlatIP(self.dimension)
