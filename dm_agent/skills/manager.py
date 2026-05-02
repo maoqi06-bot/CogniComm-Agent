@@ -54,6 +54,11 @@ class SkillManager:
 
         count = 0
         for skill in get_builtin_skills():
+            if getattr(skill, "mcp_manager", None) is None and self.mcp_manager is not None:
+                try:
+                    setattr(skill, "mcp_manager", self.mcp_manager)
+                except Exception:
+                    pass
             meta = skill.get_metadata()
             self.skills[meta.name] = skill
             count += 1

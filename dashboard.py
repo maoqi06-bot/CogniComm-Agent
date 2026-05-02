@@ -533,7 +533,14 @@ elif page == "🧪 自动化评估":
             # --- Generation quality and retrieval quality are different views. ---
             st.subheader("生成质量")
             gen_cols = st.columns(4)
-            gen_cols[0].metric("Faithfulness (忠实度)", f"{df_eval['faithfulness'].mean():.2%}")
+
+            # Faithfulness (可能不存在)
+            if "faithfulness" in df_eval.columns and df_eval["faithfulness"].notna().any():
+                faith_val = df_eval["faithfulness"].mean()
+                gen_cols[0].metric("Faithfulness (忠实度)", f"{faith_val:.2%}")
+            else:
+                gen_cols[0].metric("Faithfulness (忠实度)", "N/A")
+
             gen_cols[1].metric("Answer relevancy (回答相关度)", f"{df_eval[rel_col].mean():.2%}")
             gen_cols[2].metric("评估样本数", len(df_eval))
             if "generation_mode" in df_eval.columns:
@@ -574,7 +581,10 @@ elif page == "🧪 自动化评估":
 
             # --- [新增] 样本详情：查看具体的 ISAC 论文片段 ---
             st.subheader("📝 详细样本分析")
-            display_cols = ['question', 'faithfulness', rel_col]
+            display_cols = ['question']
+            if "faithfulness" in df_eval.columns:
+                display_cols.append("faithfulness")
+            display_cols.append(rel_col)
             for col in [
                 "retrieval_quality",
                 "context_query_overlap_max",

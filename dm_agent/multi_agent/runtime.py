@@ -11,14 +11,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
+import sys
 import time
 import uuid
 import asyncio
 import threading
+import ast
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from concurrent.futures import ThreadPoolExecutor, Future
 from abc import ABC, abstractmethod
@@ -30,7 +34,7 @@ from ..utils.logger import get_logger, AgentLogger
 from ..utils.security import ResourceManager, RateLimitConfig
 from .profiles import AgentProfile, CodeAgentProfile, RAGAgentProfile
 from .prompts import build_multi_agent_code_prompt, build_rag_synthesis_prompt
-from .toolkits import filter_tools_by_profile, split_mcp_tools
+from .toolkits import filter_tools_by_profile, is_rag_tool, split_mcp_tools
 from .memory import AgentMemoryPolicy, MemoryWriteTemplate, MultiAgentMemoryConfig, MultiAgentMemoryHub
 
 
@@ -131,6 +135,8 @@ class RAGAgent(BaseAgent):
         self.memory_hub = memory_hub
         self._rag_skills: Dict[str, BaseRAGSkill] = {}
         self._lock = threading.Lock()
+        self.current_trace_id: Optional[str] = None
+        self._tracer: Any = None
 
     def register_rag_skill(self, skill: BaseRAGSkill):
         """注册 RAG 技能"""
@@ -153,6 +159,77 @@ class RAGAgent(BaseAgent):
                 f"[{idx}] source={source}; score={score}\n{content}"
             )
         return "\n\n".join(context_lines)
+
+    def _trace_path(self) -> Optional[Path]:
+        if not self.current_trace_id:
+            return None
+        return Path("data") / "traces" / f"{self.current_trace_id}.json"
+
+    def _read_trace_metadata(self) -> Dict[str, Any]:
+        trace_path = self._trace_path()
+        if not trace_path or not trace_path.exists():
+            return {}
+        try:
+            with open(trace_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("metadata", {}) if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _results_from_trace_metadata(self, query: str) -> List[Dict[str, Any]]:
+        metadata = self._read_trace_metadata()
+        samples = metadata.get("rag_eval_samples") or []
+        for sample in reversed(samples):
+            if not isinstance(sample, dict):
+                continue
+            contexts = sample.get("contexts") or []
+            if not contexts:
+                continue
+            scores = sample.get("context_scores") or []
+            sources = sample.get("context_sources") or []
+            return [
+                {
+                    "skill": sample.get("source") or "mcp_rag",
+                    "content": context,
+                    "score": scores[idx] if idx < len(scores) else 0,
+                    "source": sources[idx] if idx < len(sources) else "unknown",
+                }
+                for idx, context in enumerate(contexts)
+            ]
+
+        contexts = metadata.get("retrieved_contexts") or []
+        return [
+            {
+                "skill": "mcp_rag",
+                "content": context,
+                "score": 0,
+                "source": "unknown",
+            }
+            for context in contexts
+        ]
+
+    def _query_mcp_rag_tools(self, query: str) -> List[Dict[str, Any]]:
+        if not self._mcp_tools:
+            return []
+
+        before_count = len((self._read_trace_metadata().get("rag_eval_samples") or []))
+        for tool in self._mcp_tools:
+            try:
+                arguments = {"query": query}
+                if self.current_trace_id:
+                    arguments["trace_id"] = self.current_trace_id
+                if hasattr(tool, "execute"):
+                    tool.execute(arguments)
+                elif callable(tool):
+                    tool(arguments)
+            except Exception as exc:
+                self.logger.warning(f"MCP RAG tool failed for {getattr(tool, 'name', tool)}: {exc}")
+
+        metadata = self._read_trace_metadata()
+        after_count = len((metadata.get("rag_eval_samples") or []))
+        if after_count <= before_count and not metadata.get("retrieved_contexts"):
+            return []
+        return self._results_from_trace_metadata(query)
 
     def _synthesize_answer(
         self,
@@ -200,7 +277,7 @@ class RAGAgent(BaseAgent):
                 "cancelled": True,
             }
 
-        if not self._rag_skills:
+        if not self._rag_skills and not self._mcp_tools:
             return {
                 "success": False,
                 "error": "No RAG skills available",
@@ -209,7 +286,7 @@ class RAGAgent(BaseAgent):
 
         results: List[Dict[str, Any]] = []
         query = task.description
-        tracer = None
+        tracer = self._tracer
         memory_context = ""
         if self.memory_hub and getattr(self.profile, "memory_enabled", True):
             memory_context = self.memory_hub.build_context(query, agent_name=self.name)
@@ -231,7 +308,7 @@ class RAGAgent(BaseAgent):
                     "cancelled": True,
                 }
             try:
-                skill_tracer = getattr(skill, "_tracer", None)
+                skill_tracer = getattr(skill, "_tracer", None) or tracer
                 if tracer is None:
                     tracer = skill_tracer
                 node = None
@@ -269,6 +346,19 @@ class RAGAgent(BaseAgent):
                             })
             except Exception as e:
                 self.logger.warning(f"RAG search failed for {skill_name}: {e}")
+
+        if not results:
+            mcp_results = self._query_mcp_rag_tools(query)
+            if mcp_results:
+                results.extend(mcp_results)
+                if tracer:
+                    tracer.metadata.setdefault("retrieved_contexts", [])
+                    known_contexts = set(tracer.metadata["retrieved_contexts"])
+                    for item in mcp_results:
+                        content = item.get("content")
+                        if content and content not in known_contexts:
+                            tracer.metadata["retrieved_contexts"].append(content)
+                            known_contexts.add(content)
 
         if not results:
             return {
@@ -462,25 +552,169 @@ class CodeAgent(BaseAgent):
             return [str(item).strip() for item in raw_requirements if str(item).strip()]
         return []
 
+    def _default_docker_requirements(self) -> List[str]:
+        """Load lightweight task-scoped requirements for Docker executions."""
+        raw_files = os.getenv("DOCKER_REQUIREMENTS_FILES", "task/requirements.txt")
+        requirements: List[str] = []
+        for raw_path in raw_files.split(os.pathsep):
+            path = raw_path.strip()
+            if not path:
+                continue
+            req_path = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+            if not os.path.exists(req_path):
+                continue
+            try:
+                with open(req_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        item = line.strip()
+                        if item and not item.startswith("#"):
+                            requirements.append(item)
+            except Exception:
+                continue
+        return list(dict.fromkeys(requirements))
+
+    @staticmethod
+    def _python_import_modules(code: str) -> Set[str]:
+        modules: Set[str] = set()
+        try:
+            tree = ast.parse(code or "")
+        except SyntaxError:
+            return modules
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name:
+                        modules.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules.add(node.module.split(".")[0])
+        return modules
+
+    @staticmethod
+    def _module_to_package(module_name: str) -> Optional[str]:
+        module_name = (module_name or "").strip()
+        if not module_name:
+            return None
+        standard_modules = set(getattr(sys, "stdlib_module_names", set()))
+        if module_name in standard_modules:
+            return None
+        mapping = {
+            "PIL": "Pillow",
+            "bs4": "beautifulsoup4",
+            "cv2": "opencv-python-headless",
+            "docx": "python-docx",
+            "fitz": "PyMuPDF",
+            "mpl_toolkits": "matplotlib",
+            "numpy": "numpy",
+            "openpyxl": "openpyxl",
+            "pandas": "pandas",
+            "pptx": "python-pptx",
+            "PyPDF2": "PyPDF2",
+            "pypdf": "pypdf",
+            "requests": "requests",
+            "scipy": "scipy",
+            "seaborn": "seaborn",
+            "skimage": "scikit-image",
+            "sklearn": "scikit-learn",
+            "statsmodels": "statsmodels",
+            "sympy": "sympy",
+            "tqdm": "tqdm",
+            "yaml": "PyYAML",
+        }
+        return mapping.get(module_name, module_name)
+
+    @staticmethod
+    def _requirement_name(requirement: str) -> str:
+        value = str(requirement or "").strip()
+        value = re.split(r"\s*(?:==|>=|<=|~=|!=|>|<|\[)", value, maxsplit=1)[0]
+        return value.lower().replace("_", "-")
+
+    @classmethod
+    def _append_requirement_once(cls, requirements: List[str], requirement: str) -> None:
+        requirement = str(requirement or "").strip()
+        if not requirement:
+            return
+        existing_names = {cls._requirement_name(item) for item in requirements}
+        if cls._requirement_name(requirement) not in existing_names:
+            requirements.append(requirement)
+
+    def _missing_module_requirements(self, stderr: str) -> List[str]:
+        requirements: List[str] = []
+        patterns = (
+            r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]",
+            r"ImportError:\s+No module named ['\"]([^'\"]+)['\"]",
+        )
+        for pattern in patterns:
+            for match in re.findall(pattern, stderr or ""):
+                package = self._module_to_package(str(match).split(".")[0])
+                if package:
+                    self._append_requirement_once(requirements, package)
+        return list(dict.fromkeys(requirements))
+
+    @staticmethod
+    def _format_docker_result(result: Dict[str, Any], *, requirements: List[str]) -> str:
+        stdout = str(result.get("stdout") or "").strip()
+        stderr = str(result.get("stderr") or "").strip()
+        error = str(result.get("error") or "").strip()
+        parts = []
+        if stdout:
+            parts.append(stdout)
+        if stderr:
+            parts.append(f"stderr:\n{stderr}")
+        if error:
+            parts.append(f"error: {error}")
+        parts.append(
+            f"executed_in={result.get('executed_in', 'docker')}; "
+            f"returncode={result.get('returncode', 'unknown')}; "
+            f"requirements={requirements or []}"
+        )
+        return "\n".join(parts)
+
+    def _execute_docker_with_dependency_retry(
+        self,
+        docker_runner: "DockerRunner",
+        *,
+        code: str,
+        language: str,
+        requirements: List[str],
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        requirements = list(dict.fromkeys(requirements))
+        result = docker_runner.execute(code=code, language=language, requirements=requirements)
+        if result.get("success"):
+            return result, requirements
+
+        missing_requirements = self._missing_module_requirements(
+            "\n".join(str(result.get(key) or "") for key in ("stderr", "error", "stdout"))
+        )
+        new_requirements = [req for req in missing_requirements if req not in requirements]
+        if not new_requirements:
+            return result, requirements
+
+        retry_requirements = [*requirements, *new_requirements]
+        self.logger.info(f"Retrying Docker {language} execution with inferred requirements: {new_requirements}")
+        retry_result = docker_runner.execute(code=code, language=language, requirements=retry_requirements)
+        if not retry_result.get("success"):
+            retry_result["stderr"] = "\n".join(
+                part
+                for part in [
+                    str(retry_result.get("stderr") or "").strip(),
+                    f"[dependency-retry] installed additional packages: {new_requirements}",
+                ]
+                if part
+            )
+        return retry_result, retry_requirements
+
     def _infer_python_requirements(self, code: str, explicit_requirements: List[str]) -> List[str]:
         """Infer common scientific Python dependencies used by generated task scripts."""
-        requirements = list(dict.fromkeys(explicit_requirements))
-        text = str(code or "")
-        import_to_package = {
-            "numpy": "numpy",
-            "pandas": "pandas",
-            "matplotlib": "matplotlib",
-            "scipy": "scipy",
-        }
-        for module_name, package_name in import_to_package.items():
-            patterns = (f"import {module_name}", f"from {module_name} ")
-            if any(pattern in text for pattern in patterns) and package_name not in requirements:
-                requirements.append(package_name)
+        requirements = list(dict.fromkeys([*self._default_docker_requirements(), *explicit_requirements]))
+        for module_name in self._python_import_modules(str(code or "")):
+            package_name = self._module_to_package(module_name)
+            if package_name:
+                self._append_requirement_once(requirements, package_name)
         return requirements
 
     def _infer_shell_requirements(self, command: str, explicit_requirements: List[str]) -> List[str]:
         """Infer package requirements for simple `python path.py` shell commands."""
-        requirements = list(dict.fromkeys(explicit_requirements))
+        requirements = list(dict.fromkeys([*self._default_docker_requirements(), *explicit_requirements]))
         try:
             parts = shlex.split(command, posix=False)
         except ValueError:
@@ -546,20 +780,24 @@ class CodeAgent(BaseAgent):
             requirements = self._normalize_docker_requirements(arguments.get("requirements"))
 
             if isinstance(code, str) and code.strip():
-                result = docker_runner.execute(
+                requirements = self._infer_python_requirements(code, requirements)
+                result, requirements = self._execute_docker_with_dependency_retry(
+                    docker_runner,
                     code=code,
                     language="python",
-                    requirements=self._infer_python_requirements(code, requirements),
+                    requirements=requirements,
                 )
             elif isinstance(path_value, str) and path_value.strip():
                 # 读取文件内容
                 try:
                     with open(path_value, "r", encoding="utf-8") as f:
                         code = f.read()
-                    result = docker_runner.execute(
+                    requirements = self._infer_python_requirements(code, requirements)
+                    result, requirements = self._execute_docker_with_dependency_retry(
+                        docker_runner,
                         code=code,
                         language="python",
-                        requirements=self._infer_python_requirements(code, requirements),
+                        requirements=requirements,
                     )
                 except FileNotFoundError:
                     return f"文件未找到: {path_value}"
@@ -572,13 +810,12 @@ class CodeAgent(BaseAgent):
                 output = result.get("stdout", "")
                 meta = (
                     f"executed_in={result.get('executed_in', 'docker')}; "
-                    f"returncode={result.get('returncode', 0)}"
+                    f"returncode={result.get('returncode', 0)}; "
+                    f"requirements={requirements or []}"
                 )
                 return "\n".join(part for part in [output, meta] if part).strip()
             else:
-                stderr = result.get("stderr", "")
-                error = result.get("error", "")
-                raise RuntimeError(f"Docker Python execution failed: {error}\n{stderr}".strip())
+                return "Docker Python execution failed:\n" + self._format_docker_result(result, requirements=requirements)
 
         def docker_run_shell(arguments: Dict[str, Any]) -> str:
             """在 Docker 容器的 /workspace 中执行 shell 命令"""
@@ -587,18 +824,22 @@ class CodeAgent(BaseAgent):
                 return "run_shell 工具需要 'command' 参数。"
             requirements = self._normalize_docker_requirements(arguments.get("requirements"))
             requirements = self._infer_shell_requirements(command, requirements)
-            result = docker_runner.execute(code=command, language="shell", requirements=requirements)
+            result, requirements = self._execute_docker_with_dependency_retry(
+                docker_runner,
+                code=command,
+                language="shell",
+                requirements=requirements,
+            )
             if result.get("success"):
                 output = result.get("stdout", "")
                 stderr = result.get("stderr", "")
                 meta = (
                     f"executed_in={result.get('executed_in', 'docker')}; "
-                    f"returncode={result.get('returncode', 0)}"
+                    f"returncode={result.get('returncode', 0)}; "
+                    f"requirements={requirements or []}"
                 )
                 return "\n".join(part for part in [output, f"stderr:\n{stderr}" if stderr else "", meta] if part).strip()
-            stderr = result.get("stderr", "")
-            error = result.get("error", "")
-            raise RuntimeError(f"Docker shell execution failed: {error}\n{stderr}".strip())
+            return "Docker shell execution failed:\n" + self._format_docker_result(result, requirements=requirements)
 
         def docker_run_tests(arguments: Dict[str, Any]) -> str:
             """在 Docker 容器中运行测试。"""
@@ -850,13 +1091,26 @@ class DockerRunner:
         """
         import shutil
         import subprocess
-        import tempfile
         import os
 
         self._logger.info(f"Executing {language} code in Docker container")
 
         # 创建临时文件
-        with tempfile.TemporaryDirectory() as tmpdir:
+        temp_root = os.getenv("DOCKER_TEMP_DIR") or os.path.join(self.workspace_dir, "task", ".docker_tmp")
+        os.makedirs(temp_root, exist_ok=True)
+
+        class _WorkspaceTempDir:
+            def __init__(self, root: str):
+                self.path = os.path.join(root, f"run_{uuid.uuid4().hex}")
+
+            def __enter__(self) -> str:
+                os.makedirs(self.path, exist_ok=False)
+                return self.path
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                shutil.rmtree(self.path, ignore_errors=True)
+
+        with _WorkspaceTempDir(temp_root) as tmpdir:
             if language == "python":
                 code_file = os.path.join(tmpdir, "main.py")
                 with open(code_file, "w", encoding="utf-8") as f:
@@ -1417,6 +1671,7 @@ class OrchestratorAgent:
         self.logger = logger or get_logger("orchestrator")
         self.resource_manager = resource_manager
         self.skill_manager = skill_manager
+        self.mcp_manager = None  # Will be set from main.py
         self.agent_profiles = agent_profiles or {}
         resolved_memory_config = memory_config or MultiAgentMemoryConfig(enabled=enable_memory)
         for profile_name, profile in self.agent_profiles.items():
@@ -1502,27 +1757,38 @@ class OrchestratorAgent:
 
     def _inject_trace(self, tracer: Any, trace_id: str) -> None:
         """Inject the same trace anchor into every skill used by sub-agents."""
+        self.rag_agent.current_trace_id = trace_id
+        self.rag_agent._tracer = tracer
         if not self.skill_manager:
+            if hasattr(self, "mcp_manager") and self.mcp_manager:
+                self.mcp_manager.set_trace_id(trace_id)
             return
         for skill in getattr(self.skill_manager, "skills", {}).values():
             setattr(skill, "current_trace_id", trace_id)
             if hasattr(skill, "_tracer"):
                 setattr(skill, "_tracer", tracer)
+        # Also set trace_id on MCP manager so MCP tools can forward it to MCP server
+        if hasattr(self, "mcp_manager") and self.mcp_manager:
+            self.mcp_manager.set_trace_id(trace_id)
 
     def _clear_trace(self) -> None:
+        self.rag_agent.current_trace_id = None
+        self.rag_agent._tracer = None
         if not self.skill_manager:
+            if hasattr(self, "mcp_manager") and self.mcp_manager:
+                self.mcp_manager.set_trace_id(None)
             return
         for skill in getattr(self.skill_manager, "skills", {}).values():
             if hasattr(skill, "_tracer"):
                 setattr(skill, "_tracer", None)
             if hasattr(skill, "current_trace_id"):
                 setattr(skill, "current_trace_id", None)
+        # Clear MCP manager trace_id
+        if hasattr(self, "mcp_manager") and self.mcp_manager:
+            self.mcp_manager.set_trace_id(None)
 
     def _register_rag_skills(self, skill_manager: SkillManager):
         """从 SkillManager 注册 RAG 技能"""
-        if BaseRAGSkill is None:
-            return
-
         allowed_skills = {
             str(item)
             for item in (getattr(self.rag_agent.profile, "metadata", {}) or {}).get("skills", [])
@@ -1537,10 +1803,20 @@ class OrchestratorAgent:
             meta = skill.get_metadata()
             if allowed_skills and name not in allowed_skills and meta.name not in allowed_skills:
                 continue
-            if isinstance(skill, BaseRAGSkill):
+            if BaseRAGSkill is not None and isinstance(skill, BaseRAGSkill):
                 self.rag_agent.register_rag_skill(skill)
+                continue
+            for tool in getattr(skill, "get_tools", lambda: [])() or []:
+                if is_rag_tool(tool):
+                    tool_name = getattr(tool, "name", None) or repr(tool)
+                    existing = {getattr(item, "name", None) or repr(item) for item in self.rag_agent._mcp_tools}
+                    if tool_name not in existing:
+                        self.rag_agent._mcp_tools.append(tool)
 
-        self.logger.info(f"Registered {len(self.rag_agent.get_available_domains())} RAG domains")
+        self.logger.info(
+            f"Registered {len(self.rag_agent.get_available_domains())} RAG domains "
+            f"and {len(self.rag_agent._mcp_tools)} RAG tools"
+        )
 
     def add_rag_skill(self, skill: BaseRAGSkill):
         """动态添加 RAG 技能"""
@@ -1673,9 +1949,10 @@ class OrchestratorAgent:
             # 4. 聚合结果
             self.logger.info("Aggregating results...")
             final_answer = self.aggregator.aggregate(task, all_results)
+            main_trace_path = None
             if tracer:
                 tracer.metadata["llm_answer"] = final_answer
-                tracer.finish_and_save()
+                main_trace_path = tracer.finish_and_save()
 
             duration = time.time() - start_time
             self.logger.info(f"[{task_id}] Task completed in {duration:.2f}s")
@@ -1709,6 +1986,15 @@ class OrchestratorAgent:
             }
             if trace_id:
                 result["rag_trace_id"] = trace_id
+
+            # 后处理：合并 MCP 检索 trace 到主 trace（如果有）
+            if main_trace_path:
+                from ._merge_rag_trace import merge_rag_trace_to_main
+                merge_rag_trace_to_main(
+                    trace_id,
+                    main_trace_path,
+                    expected_rag=decomposition.requires_rag,
+                )
 
             if trace:
                 result["trace"] = {

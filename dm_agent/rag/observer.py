@@ -5,12 +5,17 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from datasets import Dataset
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from ragas import evaluate
-from ragas.embeddings import LangchainEmbeddingsWrapper
-from ragas.metrics import answer_relevancy, faithfulness
+from ragas.metrics._answer_relevance import AnswerRelevancy
+from ragas.metrics._faithfulness import Faithfulness
+from ragas.run_config import RunConfig
 
-from dm_agent.rag.evaluator import _retrieval_metrics
+from dm_agent.rag.evaluator import (
+    _build_ragas_embeddings,
+    _build_ragas_llm,
+    _ragas_eval_view,
+    _retrieval_metrics,
+)
 
 
 class RagasObserver:
@@ -35,22 +40,12 @@ class RagasObserver:
         return number
 
     @staticmethod
-    def _build_llm() -> ChatOpenAI:
-        return ChatOpenAI(
-            model=os.getenv("RAGAS_LLM_MODEL", "gpt-3.5-turbo"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("RAGAS_OPENAI_BASE_URL", "https://sg.uiuiapi.com/v1/"),
-            temperature=0,
-        )
+    def _build_llm():
+        return _build_ragas_llm()
 
     @staticmethod
-    def _build_embeddings() -> LangchainEmbeddingsWrapper:
-        embeddings = OpenAIEmbeddings(
-            model=os.getenv("RAGAS_EMBEDDING_MODEL", "text-embedding-3-small"),
-            api_key=os.getenv("OPENAI_API_KEY"),
-            base_url=os.getenv("RAGAS_OPENAI_BASE_URL", "https://sg.uiuiapi.com/v1/"),
-        )
-        return LangchainEmbeddingsWrapper(embeddings)
+    def _build_embeddings():
+        return _build_ragas_embeddings()
 
     @staticmethod
     def _load_report(report_path: Path) -> List[Dict[str, Any]]:
@@ -71,45 +66,72 @@ class RagasObserver:
 
         score_dict: Dict[str, Any] = {}
         if question and contexts and answer:
+            eval_sample = _ragas_eval_view(
+                {"question": question, "contexts": contexts, "answer": answer}
+            )
             dataset = Dataset.from_dict(
                 {
-                    "question": [question],
-                    "contexts": [contexts],
-                    "answer": [answer],
+                    "question": [eval_sample["question"]],
+                    "contexts": [eval_sample["contexts"]],
+                    "answer": [eval_sample["answer"]],
                 }
             )
             llm = RagasObserver._build_llm()
             embeddings = RagasObserver._build_embeddings()
+            faithfulness_metric = Faithfulness(llm=llm)
+            answer_relevancy_metric = AnswerRelevancy(
+                llm=llm,
+                embeddings=embeddings,
+                strictness=int(os.getenv("RAGAS_ANSWER_RELEVANCY_STRICTNESS", "1")),
+            )
             try:
                 results = evaluate(
                     dataset,
-                    metrics=[faithfulness, answer_relevancy],
-                    llm=llm,
-                    embeddings=embeddings,
+                    metrics=[faithfulness_metric, answer_relevancy_metric],
+                    run_config=RunConfig(
+                        timeout=float(os.getenv("RAGAS_RUN_TIMEOUT", "90")),
+                        max_retries=int(os.getenv("RAGAS_RUN_MAX_RETRIES", "1")),
+                    ),
                 )
                 score_dict = results.to_pandas().iloc[0].to_dict()
             except Exception as exc:
                 print(f"[WARN] Ragas full evaluation failed, using relevancy fallback: {exc}")
                 try:
-                    faith_result = evaluate(dataset, metrics=[faithfulness], llm=llm)
+                    faith_result = evaluate(
+                        dataset,
+                        metrics=[faithfulness_metric],
+                        run_config=RunConfig(
+                            timeout=float(os.getenv("RAGAS_RUN_TIMEOUT", "90")),
+                            max_retries=int(os.getenv("RAGAS_RUN_MAX_RETRIES", "1")),
+                        ),
+                    )
                     score_dict = faith_result.to_pandas().iloc[0].to_dict()
                 except Exception as faith_exc:
                     print(f"[WARN] Faithfulness evaluation also failed: {faith_exc}")
 
         ragas_relevancy = RagasObserver._safe_float(score_dict.get("answer_relevancy"))
-        relevancy = (
-            ragas_relevancy
-            if ragas_relevancy is not None
-            else RagasObserver._fallback_relevancy(question, answer, contexts)
-        )
+        ragas_faithfulness = RagasObserver._safe_float(score_dict.get("faithfulness"))
+        fallback_relevancy = RagasObserver._fallback_relevancy(question, answer, contexts)
+        if ragas_relevancy is None:
+            relevancy = fallback_relevancy
+            relevancy_source = "local_fallback"
+        elif ragas_relevancy == 0.0 and fallback_relevancy > float(os.getenv("RAGAS_ZERO_RELEVANCY_FALLBACK_THRESHOLD", "0.02")):
+            relevancy = fallback_relevancy
+            relevancy_source = "ragas_zero_local_fallback"
+        else:
+            relevancy = ragas_relevancy
+            relevancy_source = "ragas"
 
         entry = {
             "question": question,
             "answer": answer,
+            "answer_source": sample.get("answer_source", "unknown"),
             "contexts": contexts,
-            "faithfulness": RagasObserver._safe_float(score_dict.get("faithfulness")),
+            "faithfulness": ragas_faithfulness,
+            "faithfulness_source": "ragas" if ragas_faithfulness is not None else "unavailable",
+            "answer_relevancy_raw": ragas_relevancy,
             "answer_relevancy": relevancy,
-            "answer_relevancy_source": "ragas" if ragas_relevancy is not None else "local_fallback",
+            "answer_relevancy_source": relevancy_source,
             "eval_scope": sample.get("eval_scope", "rag_query"),
             "source": sample.get("source"),
             "context_scores": sample.get("context_scores") or [],
@@ -128,7 +150,43 @@ class RagasObserver:
         metadata = trace_data.get("metadata", {})
         samples = metadata.get("rag_eval_samples") or []
         if isinstance(samples, list) and samples:
-            return [sample for sample in samples if isinstance(sample, dict)]
+            synthesis_samples = [
+                sample
+                for sample in samples
+                if isinstance(sample, dict)
+                and str(sample.get("source") or "").startswith("rag_agent:synthesis")
+            ]
+            if synthesis_samples:
+                samples = synthesis_samples
+            allow_retrieval_answer = os.getenv("RAGAS_ALLOW_RETRIEVAL_ANSWER", "false").lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            normalized_samples = []
+            for sample in samples:
+                if not isinstance(sample, dict):
+                    continue
+                ragas_answer = sample.get("answer") or sample.get("llm_answer")
+                answer_source = "sample.answer" if sample.get("answer") else "sample.llm_answer"
+                if not ragas_answer and allow_retrieval_answer:
+                    ragas_answer = sample.get("retrieval_answer")
+                    answer_source = "sample.retrieval_answer"
+                if not ragas_answer:
+                    ragas_answer = metadata.get("llm_answer")
+                    answer_source = "metadata.llm_answer"
+                if not ragas_answer:
+                    continue
+                normalized_samples.append(
+                    {
+                        **sample,
+                        "answer": ragas_answer,
+                        "answer_source": answer_source,
+                        "retrieval_answer": sample.get("retrieval_answer"),
+                    }
+                )
+            return normalized_samples
 
         # Default policy: Ragas is for RAG-query evaluation, not whole-agent scoring.
         # Whole task evaluation is allowed only when explicitly requested.

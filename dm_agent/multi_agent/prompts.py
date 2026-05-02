@@ -26,6 +26,8 @@ Role boundary:
 8. For analysis/derivation subtasks, create one concise Markdown file or concise summary and finish in 2-4 tool calls.
 9. Once the core artifact is written and verified enough for downstream tasks, call task_complete immediately. Do not repeatedly list/read/check the same files.
 10. If the previous observation says JSON parsing failed, the next response must be a tiny valid JSON object. Do not resend the whole file content.
+11. Docker tools run in a clean container. When code needs third-party Python packages, pass action_input.requirements explicitly; the tool also auto-detects imports and task/requirements.txt.
+12. If Docker reports missing packages or installation failure, either retry with a smaller requirements list or simplify the smoke test instead of repeatedly running the same failing command.
 
 Available tools:
 {tool_desc}

@@ -598,6 +598,140 @@ def display_result(result: Dict[str, Any], show_steps: bool = False) -> None:
     print_separator("-")
 
 
+def _merge_rag_trace_to_main(trace_id: str, main_trace_path: str) -> None:
+    """后处理：将 MCP 检索 trace 合并到主 trace 文件。
+
+    场景：当使用 MCP RAG 时，检索发生在 MCP 进程创建独立的 trace，
+    而最终答案在主进程写入另一个 trace。通过此函数将检索数据合并到
+    主 trace，使 Ragas 评估能获取完整的 question + contexts + answer。
+    """
+    import re
+    from pathlib import Path
+
+    def has_rag_payload(metadata):
+        return bool(
+            metadata.get("retrieved_contexts")
+            or metadata.get("rag_eval_samples")
+            or metadata.get("retrieved_context")
+        )
+
+    def text_tokens(value):
+        text = str(value or "").lower()
+        return set(re.findall(r"[a-z0-9_]{2,}", text)) | set(re.findall(r"[\u4e00-\u9fff]", text))
+
+    def candidate_queries(trace_data):
+        meta = trace_data.get("metadata", {})
+        if meta.get("question"):
+            yield str(meta["question"])
+        for sample in meta.get("rag_eval_samples") or []:
+            if isinstance(sample, dict) and sample.get("question"):
+                yield str(sample["question"])
+        for node in trace_data.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            if "recall" in str(node.get("method") or "").lower() and node.get("input_data"):
+                yield str(node["input_data"])
+
+    def candidate_matches_main(main_question, trace_data):
+        main_tokens = text_tokens(main_question)
+        if not main_tokens:
+            return False
+        for query in candidate_queries(trace_data):
+            query_tokens = text_tokens(query)
+            overlap = main_tokens & query_tokens
+            if len(overlap) >= 2 or (len(overlap) == 1 and len(query_tokens) <= 3):
+                return True
+        return False
+
+    trace_dir = Path("data/traces")
+    main_path = Path(main_trace_path)
+    if not main_path.exists():
+        return
+
+    # 读取主 trace
+    try:
+        with open(main_path, "r", encoding="utf-8") as f:
+            main_data = json.load(f)
+    except Exception:
+        return
+
+    main_meta = main_data.setdefault("metadata", {})
+    if has_rag_payload(main_meta):
+        print("🔍 主 trace 已包含检索内容，跳过合并")
+        return
+    main_question = main_meta.get("question", "")
+
+    # 查找与主 trace 同时间段的独立检索 trace
+    # 策略：查找有 context 但没有 llm_answer 的文件，且时间与主 trace 接近
+    main_mtime = main_path.stat().st_mtime
+    candidates = []
+
+    for f in trace_dir.glob("query_*.json"):
+        if f.name == main_path.name:
+            continue
+        # 时间差在 120 秒内
+        time_diff = abs(f.stat().st_mtime - main_mtime)
+        if time_diff > 120:
+            continue
+        try:
+            with open(f, "r", encoding="utf-8") as fp:
+                data = json.load(fp)
+            meta = data.get("metadata", {})
+            if "llm_answer" in meta or not has_rag_payload(meta):
+                continue
+            if not candidate_matches_main(main_question, data):
+                continue
+            candidates.append((f, time_diff))
+        except Exception:
+            continue
+
+    print(f"🔍 找到 {len(candidates)} 个候选文件: {[c[0].name for c in candidates]}")
+
+    for candidate, _ in candidates:
+        candidate_path = candidate
+        if candidate_path.name == main_path.name:
+            continue
+        try:
+            with open(candidate_path, "r", encoding="utf-8") as f:
+                other = json.load(f)
+
+            # 如果是检索 trace（有 RAG payload 但没有 llm_answer）
+            if "llm_answer" not in other.get("metadata", {}) and has_rag_payload(other.get("metadata", {})):
+                other_meta = other.get("metadata", {})
+                # 合并 nodes
+                main_nodes = main_data.get("nodes", [])
+                other_nodes = other.get("nodes", [])
+                seen = set()
+                merged_nodes = []
+                for node_list in [main_nodes, other_nodes]:
+                    for node in node_list:
+                        key = (node.get("method"), node.get("provider"), str(node.get("input_data", ""))[:50])
+                        if key not in seen:
+                            seen.add(key)
+                            merged_nodes.append(node)
+                main_data["nodes"] = merged_nodes
+
+                # 合并 metadata
+                main_meta = main_data.setdefault("metadata", {})
+                other_meta = other.get("metadata", {})
+
+                # 优先保留主 trace 的 question/llm_answer
+                for key in ["retrieved_contexts", "rag_eval_samples", "retrieved_context",
+                            "config_top_k", "config_threshold"]:
+                    if key in other_meta and key not in main_meta:
+                        main_meta[key] = other_meta[key]
+
+                # 写回主 trace
+                with open(main_path, "w", encoding="utf-8") as f:
+                    json.dump(main_data, f, ensure_ascii=False, indent=2)
+
+                print(f"🔀 已合并检索 trace: {candidate_path.name} -> {main_path.name}")
+                break
+        except Exception as e:
+            print(f"⚠️ 处理候选文件失败: {e}")
+            continue
+
+
 def create_step_callback(show_steps: bool):
     """创建步骤回调函数，用于实时打印 agent 执行状态"""
     def callback(step_num: int, step: Any) -> None:
@@ -743,6 +877,12 @@ def execute_task(config: Config, tools: List[Tool], skill_manager: SkillManager 
             # 打印确认 (现在一定会有输出了)
             print(f"🔗 Trace 锚点已同步: [{skill_id}] -> {tid}")
 
+        # 设置 MCP Manager 的 trace_id，使 MCP 工具能接收
+        try:
+            mcp_manager.set_trace_id(tid)
+        except NameError:
+            pass  # mcp_manager 未定义，忽略
+
         agent = ReactAgent(
             client,
             tools,
@@ -769,6 +909,20 @@ def execute_task(config: Config, tools: List[Tool], skill_manager: SkillManager 
             tracer.metadata["llm_answer"] = final_res_text
             save_path = tracer.finish_and_save()  # 统一在这里保存！
             print(f"📊 Trace 已保存至: {save_path}")
+
+            # 后处理：合并可能存在的 MCP 检索 trace 到主 trace
+            print(f"🔍 开始合并 trace: trace_id={tid}, path={save_path}")
+            _merge_rag_trace_to_main(tid, save_path)
+            print(f"🔍 合并完成，检查结果...")
+
+            # 验证合并结果
+            with open(save_path, "r", encoding="utf-8") as f:
+                merged = json.load(f)
+            merged_meta = merged.get("metadata", {})
+            has_ctx = bool(merged_meta.get("retrieved_contexts") or merged_meta.get("rag_eval_samples") or merged_meta.get("retrieved_context"))
+            has_question = "question" in merged_meta
+            has_llm = "llm_answer" in merged_meta
+            print(f"🔍 合并后 trace 状态: question={has_question}, context={has_ctx}, llm_answer={has_llm}")
 
         print(f"{Fore.CYAN}Ragas 评估已改为 Dashboard 手动触发，不再阻塞主任务流程。{Style.RESET_ALL}")
 
@@ -972,9 +1126,16 @@ def run_multi_agent_task(
     if not llm_ready:
         return 1
 
+    # 初始化 MCP；RAG 型技能加载时需要 manager 引用
+    print(f"{Fore.CYAN}[2/5] 初始化 MCP / 技能管理器...{Style.RESET_ALL}")
+    mcp_config = load_mcp_config()
+    mcp_manager = MCPManager(mcp_config)
+    started_mcp = mcp_manager.start_all()
+    mcp_tools = mcp_manager.get_tools()
+    print(f"      已启动 {started_mcp} 个 MCP 服务，加载 {len(mcp_tools)} 个 MCP 工具")
+
     # 初始化技能管理器
-    print(f"{Fore.CYAN}[2/5] 加载技能管理器...{Style.RESET_ALL}")
-    skill_manager = SkillManager(llm_client=client)
+    skill_manager = SkillManager(llm_client=client, mcp_manager=mcp_manager)
     skill_count = skill_manager.load_all()
     print(f"      已加载 {skill_count} 个技能")
 
@@ -998,6 +1159,8 @@ def run_multi_agent_task(
         mcp_tools=mcp_tools or [],
         agent_profiles=agent_profiles,
     )
+    # 设置 MCP Manager，使 MCP 工具能接收 trace_id
+    orchestrator.mcp_manager = mcp_manager
 
     # 执行任务
     print(f"{Fore.CYAN}[5/5] 执行任务...{Style.RESET_ALL}")

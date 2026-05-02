@@ -12,6 +12,11 @@ colorama>=0.4.6,<1.0.0
 # OpenAI 官方 SDK - 用于调用 OpenAI API
 openai>=1.0.0
 
+# RAGAS 评估器依赖
+ragas==0.4.3
+langchain-openai
+datasets
+
 # Anthropic 官方 SDK - 用于调用 Claude API
 anthropic>=0.18.0
 

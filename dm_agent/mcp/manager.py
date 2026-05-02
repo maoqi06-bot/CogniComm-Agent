@@ -21,14 +21,15 @@ class MCPManager:
     def __init__(self, config: Optional[MCPConfig] = None):
         """
         初始化 MCP 管理器
-        
+
         Args:
             config (Optional[MCPConfig], optional): MCP 配置对象，如果未提供则使用默认空配置
-            
+
         """
         self.config = config or MCPConfig()
         self.clients: Dict[str, MCPClient] = {}
         self._tools_cache: List[Tool] = []
+        self._current_trace_id: Optional[str] = None
 
     def start_all(self) -> int:
         """
@@ -174,7 +175,7 @@ class MCPManager:
     ) -> Tool:
         """
         创建 MCP 工具的包装器
-        
+
         将MCP服务器提供的工具封装为系统可用的Tool对象，包括构建工具描述和执行函数。
 
         Args:
@@ -211,17 +212,26 @@ class MCPManager:
             if params_desc:
                 full_description += f". Arguments: {{{', '.join(params_desc)}}}"
 
+        # 保存 manager 引用，用于闭包中动态获取 trace_id
+        manager_ref = self
+
         # 创建工具执行函数
         def runner(arguments: Dict[str, Any]) -> str:
             """
             工具执行函数
-            
+
             Args:
-                arguments (Dict[str, Any]): 工具执行参数
-                
+                arguments: Dict[str, Any]: 工具执行参数
+
             Returns:
                 str: 工具执行结果
             """
+            # 注入 trace_id 到参数中
+            current_trace_id = manager_ref._current_trace_id
+            if current_trace_id:
+                arguments = dict(arguments)  # 复制以避免修改原对象
+                arguments["trace_id"] = current_trace_id
+
             client = self.clients.get(server_name)
             if not client or not client.is_running():
                 return f"❌ MCP 服务器 '{server_name}' 未运行"
@@ -241,12 +251,12 @@ class MCPManager:
     def get_tools(self) -> List[Tool]:
         """
         获取所有 MCP 工具
-        
+
         返回当前缓存的所有MCP工具的副本，确保外部修改不会影响内部缓存。
 
         Returns:
             List[Tool]: 工具列表的副本
-            
+
         Examples:
             >>> manager = MCPManager()
             >>> tools = manager.get_tools()
@@ -254,6 +264,14 @@ class MCPManager:
             True
         """
         return self._tools_cache.copy()
+
+    def set_trace_id(self, trace_id: str) -> None:
+        """设置当前 trace ID，供 MCP 工具使用"""
+        self._current_trace_id = trace_id
+
+    def get_trace_id(self) -> Optional[str]:
+        """获取当前 trace ID"""
+        return self._current_trace_id
 
     def get_running_servers(self) -> List[str]:
         """
